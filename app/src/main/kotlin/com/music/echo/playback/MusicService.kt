@@ -5080,6 +5080,8 @@ class MusicService : MediaLibraryService(), Player.Listener, PlaybackStatsListen
     const val ALBUM = "album"
     const val PLAYLIST = "playlist"
     const val YOUTUBE_PLAYLIST = "youtube_playlist"
+    const val HOME = "home"
+    const val HOME_SECTION = "home_section"
     const val SEARCH = "search"
     const val SHUFFLE_ACTION = "__shuffle__"
 
