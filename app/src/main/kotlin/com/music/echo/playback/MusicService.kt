@@ -3641,9 +3641,12 @@ class MusicService : MediaLibraryService(), Player.Listener, PlaybackStatsListen
             // trackedMediaItem: ExoPlayer resolves N+1 while trackedMediaItem is
             // still N, which used to search/addon-resolve the wrong song and cache
             // its URL under N+1 (same audio repeated, metadata correct).
+            // Player getters must run on the application (main) thread.
             val queueItem = runCatching {
-                player.findNextMediaItemById(mediaId)
-                    ?: player.mediaItems.find { it.mediaId == mediaId }
+                kotlinx.coroutines.withContext(Dispatchers.Main) {
+                    player.findNextMediaItemById(mediaId)
+                        ?: player.mediaItems.find { it.mediaId == mediaId }
+                }
             }.getOrNull()
             val queueMeta = queueItem?.metadata
             val queueMediaMetadata = queueItem?.mediaMetadata
@@ -5149,8 +5152,10 @@ class MusicService : MediaLibraryService(), Player.Listener, PlaybackStatsListen
               // raced with the on-demand addon resolve. Preload the addon URL only.
               if (mediaId.startsWith("addon_")) {
                 val queueItem = runCatching {
-                  player.findNextMediaItemById(mediaId)
-                    ?: player.mediaItems.find { it.mediaId == mediaId }
+                  kotlinx.coroutines.withContext(Dispatchers.Main) {
+                    player.findNextMediaItemById(mediaId)
+                      ?: player.mediaItems.find { it.mediaId == mediaId }
+                  }
                 }.getOrNull()
                 val queueMeta = queueItem?.metadata
                 val queueMediaMetadata = queueItem?.mediaMetadata

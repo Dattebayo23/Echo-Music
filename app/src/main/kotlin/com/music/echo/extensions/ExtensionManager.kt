@@ -1,6 +1,7 @@
 package com.music.echo.extensions
 
 import android.content.Context
+import android.net.Uri
 import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.stringPreferencesKey
 import com.music.innertube.models.Artist
@@ -150,6 +151,7 @@ class ExtensionManager @Inject constructor(
         for (track in tracks) {
             if (track.id.isBlank() || track.title.isBlank()) continue
             val gotTitle = normalizeForMatch(track.title)
+            if (gotTitle.isBlank()) continue
             val titleOk = gotTitle.contains(wantTitle) || wantTitle.contains(gotTitle)
             if (!titleOk) continue
             var score = 2
@@ -216,7 +218,8 @@ class ExtensionManager @Inject constructor(
         try {
             val baseUrl = baseUrlFor(addon)
             // BitChord contract is /stream/:id (path param), not /stream?id=.
-            val streamUrlReq = "${baseUrl.removeSuffix("/")}/stream/$trackId?quality=LOSSLESS"
+            // Encoded as a single path segment so ? # / in ids can't split the URL.
+            val streamUrlReq = "${baseUrl.removeSuffix("/")}/stream/${Uri.encode(trackId)}?quality=LOSSLESS"
             val request = Request.Builder().url(streamUrlReq).build()
             val response = httpClient.newCall(request).execute()
             val body = response.body?.string()
@@ -238,7 +241,7 @@ class ExtensionManager @Inject constructor(
                 ?: return@withContext null
             if (trackId.isBlank()) return@withContext null
             val baseUrl = baseUrlFor(targetAddon)
-            val streamUrlReq = "${baseUrl.removeSuffix("/")}/stream/$trackId?quality=LOSSLESS"
+            val streamUrlReq = "${baseUrl.removeSuffix("/")}/stream/${Uri.encode(trackId)}?quality=LOSSLESS"
             val streamReq = Request.Builder().url(streamUrlReq).build()
             val streamRes = httpClient.newCall(streamReq).execute()
             val streamBody = streamRes.body?.string()
@@ -273,7 +276,7 @@ class ExtensionManager @Inject constructor(
                     }
                     
                     android.util.Log.e("ExtensionManager", "Matched track: ${match.title} by ${match.artist}. Fetching stream...")
-                    val streamUrlReq = "${baseUrl.removeSuffix("/")}/stream/${match.id}?quality=LOSSLESS"
+                    val streamUrlReq = "${baseUrl.removeSuffix("/")}/stream/${Uri.encode(match.id)}?quality=LOSSLESS"
                     val streamReq = Request.Builder().url(streamUrlReq).build()
                     val streamRes = httpClient.newCall(streamReq).execute()
                     val streamBody = streamRes.body?.string()
