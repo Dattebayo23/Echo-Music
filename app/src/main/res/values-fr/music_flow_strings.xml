@@ -36,11 +36,11 @@
     <string name="music_flow_auto_next">Passage automatique</string>
     <string name="music_flow_auto_next_description">Passer au titre suivant lorsqu\'un titre se termine</string>
     <string name="music_flow_animated_background">Arrière-plans animés</string>
-    <string name="music_flow_animated_background_description">Afficher les boucles Canvas lorsqu\'elles sont disponibles. Désactivé en économiseur de données</string>
+    <string name="music_flow_animated_background_description">Afficher les boucles Canvas lorsqu\'elles sont disponibles. Désactivé avec l\'Économiseur de données.</string>
     <string name="music_flow_lyrics">Aperçu des paroles</string>
     <string name="music_flow_lyrics_description">Afficher la ligne de paroles actuelle sur chaque titre</string>
     <string name="music_flow_cellular_prefetch">Précharger les pochettes en données mobiles</string>
     <string name="music_flow_cellular_prefetch_description">Seuls les visuels et détails des titres sont préchargés, jamais l\'audio</string>
     <string name="music_flow_hide_recent">Masquer les titres récents</string>
-    <string name="music_flow_hide_recent_description">Ignorer les titres écoutez récemment</string>
+    <string name="music_flow_hide_recent_description">Ignorer les titres écoutés récemment</string>
 </resources>
