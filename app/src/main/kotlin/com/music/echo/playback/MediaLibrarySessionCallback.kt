@@ -949,10 +949,11 @@ constructor(
         ) ?: return emptyList()
       home.sections.mapIndexedNotNull { index, section ->
         val artwork = sectionArtwork(section)
-        // A shelf with no image and no browsable/playable child is a dead end on
-        // Automotive: it renders as a grey placeholder row that opens to nothing.
-        // Skip it instead of showing an empty node.
-        if (artwork == null && section.items.none { it is SongItem || it is PlaylistItem }) {
+        // A shelf whose children homeSectionSongs() cannot render (album-only,
+        // artist-only, ...) is a dead end on Automotive: it opens to nothing.
+        // Artwork alone does not make a shelf browsable, so require usable
+        // children instead of artwork.
+        if (section.items.none { it is SongItem || it is PlaylistItem }) {
           return@mapIndexedNotNull null
         }
         browsableMediaItem(
