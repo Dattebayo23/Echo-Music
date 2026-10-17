@@ -32,6 +32,7 @@ import com.music.innertube.models.filterExplicit
 import com.music.innertube.models.filterVideoSongs
 import dagger.hilt.android.qualifiers.ApplicationContext
 import echo.music.iad1tya.R
+import echo.music.iad1tya.constants.AutoplayOnAutomotiveConnectKey
 import echo.music.iad1tya.constants.HideExplicitKey
 import echo.music.iad1tya.constants.HideVideoSongsKey
 import echo.music.iad1tya.constants.MediaSessionConstants
@@ -49,6 +50,7 @@ import javax.inject.Inject
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.awaitCancellation
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.flow.map
@@ -199,20 +201,43 @@ constructor(
   }
 
   /**
-   * Handles playback resumption requests. Currently returns an empty pending result to disable
-   * automatic resumption and avoid uncontrolled playback on controller reconnect; callers should
-   * initiate playback explicitly via [onSetMediaItems] or [onGetChildren].
+   * Handles playback resumption requests (Android Auto / Automotive OS reconnect).
    *
-   * @param mediaSession the session receiving the request
-   * @param controller the controller requesting resumption
-   * @return pending [MediaItemsWithStartPosition] future (empty)
+   * Previously this always returned a never-completing future, so opening Android
+   * Auto never started Echo and the user had to open the app manually. Now, when
+   * the [AutoplayOnAutomotiveConnectKey] setting is on and the caller is an
+   * automotive controller, the current player queue (restored from disk with
+   * playWhenReady=false) is offered back so Auto can resume it without manual taps.
+   * Every other case keeps the old never-completing behavior so nothing can
+   * unexpectedly start playback on controller reconnect.
    */
   @Deprecated("Deprecated in MediaLibrarySession.Callback")
   override fun onPlaybackResumption(
     mediaSession: MediaSession,
     controller: MediaSession.ControllerInfo
   ): ListenableFuture<MediaItemsWithStartPosition> {
-    return SettableFuture.create<MediaItemsWithStartPosition>()
+    if (!isAutomotiveBrowser(controller) && !isVerifiedAutomotiveController(controller)) {
+      return SettableFuture.create<MediaItemsWithStartPosition>()
+    }
+    return scope.future(Dispatchers.Main) {
+      val autoplay = context.dataStore.get(AutoplayOnAutomotiveConnectKey, false)
+      if (!autoplay) {
+        // Never complete, exactly like before: no implicit playback.
+        awaitCancellation()
+      }
+      if (!::service.isInitialized) {
+        return@future MediaItemsWithStartPosition(emptyList(), 0, C.TIME_UNSET)
+      }
+      val player = service.player
+      if (player.mediaItemCount <= 0) {
+        return@future MediaItemsWithStartPosition(emptyList(), 0, C.TIME_UNSET)
+      }
+      val index = player.currentMediaItemIndex
+        .takeIf { it != C.INDEX_UNSET }
+        ?.coerceIn(0, player.mediaItemCount - 1) ?: 0
+      val items = List(player.mediaItemCount) { player.getMediaItemAt(it) }
+      MediaItemsWithStartPosition(items, index, player.currentPosition)
+    }
   }
 
   /**
@@ -296,9 +321,27 @@ constructor(
   ): ListenableFuture<LibraryResult<ImmutableList<MediaItem>>> {
     val isAutomotive = isAutomotiveBrowser(browser)
     return scope.future(Dispatchers.IO) {
+      // Automotive "Suggested" / "Recent" tabs arrive as LibraryParams flags on the
+      // root, not as distinct parentIds. Serve them from YT Home / local recents
+      // instead of an empty list so Auto shows recommended music.
+      if (parentId == MusicService.ROOT && params?.isSuggested == true) {
+        return@future LibraryResult.ofItemList(
+          suggestedHomeSongs().paginate(page, pageSize),
+          params.withContentStyleHints(isAutomotive),
+        )
+      }
+      if (parentId == MusicService.ROOT && params?.isRecent == true) {
+        val recent = database.songsByCreateDateAsc().first().take(50)
+          .map { it.toMediaItem(MusicService.SONG) }
+        return@future LibraryResult.ofItemList(
+          recent.paginate(page, pageSize),
+          params.withContentStyleHints(isAutomotive),
+        )
+      }
       val children =
         when (parentId) {
           MusicService.ROOT -> rootChildren()
+          MusicService.HOME -> homeSections()
           MusicService.SONG ->
             database.songsByCreateDateAsc().first().map { it.toMediaItem(parentId) }
           MusicService.ARTIST ->
@@ -337,7 +380,7 @@ constructor(
                   ?.sections
                   ?.flatMap { it.items }
                   ?.filterIsInstance<PlaylistItem>()
-                  ?.take(10) ?: emptyList()
+                  ?.take(20) ?: emptyList()
               } catch (e: Exception) {
                 reportException(e)
                 emptyList()
@@ -354,6 +397,12 @@ constructor(
           }
           else ->
             when {
+              parentId == MusicService.HOME_SECTION ||
+                parentId.startsWith("${MusicService.HOME_SECTION}/") -> {
+                val index = parentId.removePrefix(MusicService.HOME_SECTION)
+                  .removePrefix("/").toIntOrNull() ?: 0
+                listOf(shuffleMediaItem(parentId)) + homeSectionSongs(index, parentId)
+              }
               parentId.startsWith("${MusicService.ARTIST}/") ->
                 database
                   .artistSongsByCreateDateAsc(parentId.removePrefix("${MusicService.ARTIST}/"))
@@ -685,6 +734,42 @@ constructor(
             )
           }
         }
+        MusicService.HOME_SECTION -> {
+          val sectionId = path.getOrNull(1) ?: return@future defaultResult
+          val songId = path.lastOrNull() ?: return@future defaultResult
+          val parentId = mediaItems.firstOrNull()?.mediaId?.removeSuffix("/$songId")
+            ?: "${MusicService.HOME_SECTION}/$sectionId"
+          // Drop the shuffle marker itself: it is a command, not a playable queue item.
+          val songs = homeSectionSongs(
+            sectionId.toIntOrNull() ?: 0,
+            parentId
+          ).filter { it.mediaMetadata.isPlayable == true && !it.mediaId.endsWith(MusicService.SHUFFLE_ACTION) }
+          if (songs.isEmpty()) return@future defaultResult
+          val playable = songs.map { song ->
+            val id = song.mediaId.substringAfterLast("/")
+            database.song(id).first()?.toMediaItem() ?: song
+          }
+          if (songId == MusicService.SHUFFLE_ACTION) {
+            MediaItemsWithStartPosition(playable.shuffled(), 0, C.TIME_UNSET)
+          } else {
+            MediaItemsWithStartPosition(
+              playable,
+              playable.indexOfFirst { it.mediaId.endsWith(songId) }.takeIf { it != -1 } ?: 0,
+              C.TIME_UNSET
+            )
+          }
+        }
+        MusicService.HOME -> {
+          // Reached via the shuffle marker under suggested songs: play shuffled.
+          val songs = suggestedHomeSongs()
+            .filter { it.mediaMetadata.isPlayable == true && !it.mediaId.endsWith(MusicService.SHUFFLE_ACTION) }
+            .map { song ->
+              val id = song.mediaId.substringAfterLast("/")
+              database.song(id).first()?.toMediaItem() ?: song
+            }
+          if (songs.isEmpty()) return@future defaultResult
+          MediaItemsWithStartPosition(songs.shuffled(), 0, C.TIME_UNSET)
+        }
         MusicService.SEARCH -> {
           val songId = path.lastOrNull() ?: return@future defaultResult
           val searchQuery =
@@ -797,6 +882,14 @@ constructor(
   private fun rootChildren() =
     listOf(
       browsableMediaItem(
+        MusicService.HOME,
+        context.getString(R.string.home),
+        context.getString(R.string.home_desc),
+        drawableUri(R.drawable.home_filled),
+        MediaMetadata.MEDIA_TYPE_FOLDER_MIXED,
+        singleItemStyle = MediaConstants.EXTRAS_VALUE_CONTENT_STYLE_CATEGORY_GRID_ITEM,
+      ),
+      browsableMediaItem(
         MusicService.SONG,
         context.getString(R.string.songs),
         null,
@@ -837,12 +930,113 @@ constructor(
       MediaConstants.EXTRAS_VALUE_CONTENT_STYLE_GRID_ITEM
     }
 
+  /**
+   * YouTube Home sections (Quick picks, Keep listening, charts...) as browsable
+   * Auto nodes. Previously Auto only showed local Songs/Artists/Albums/Playlists,
+   * so YT-generated playlists and recommendations were invisible.
+   */
+  private suspend fun homeSections(): List<MediaItem> {
+    return try {
+      val home = YouTube.home()
+        .getOrNull()
+        ?.filterExplicit(context.dataStore.get(HideExplicitKey, false))
+        ?.filterVideoSongs(
+          context.dataStore.get(HideVideoSongsKey, false) ||
+            context.dataStore.get(echo.music.iad1tya.constants.DataSaverEnabledKey, false)
+        ) ?: return emptyList()
+      home.sections.mapIndexed { index, section ->
+        browsableMediaItem(
+          "${MusicService.HOME_SECTION}/$index",
+          section.title,
+          section.label ?: "${section.items.size} items",
+          section.thumbnail?.toUri(),
+          MediaMetadata.MEDIA_TYPE_FOLDER_MIXED,
+          singleItemStyle = MediaConstants.EXTRAS_VALUE_CONTENT_STYLE_GRID_ITEM,
+        )
+      }
+    } catch (e: Exception) {
+      reportException(e)
+      emptyList()
+    }
+  }
+
+  private suspend fun homeSectionSongs(sectionIndex: Int, parentId: String): List<MediaItem> {
+    return try {
+      val home = YouTube.home().getOrNull() ?: return emptyList()
+      val section = home.sections.getOrNull(sectionIndex) ?: return emptyList()
+      val hideExplicit = context.dataStore.get(HideExplicitKey, false)
+      val hideVideos = context.dataStore.get(HideVideoSongsKey, false) ||
+        context.dataStore.get(echo.music.iad1tya.constants.DataSaverEnabledKey, false)
+      // Filter video songs on the YTItem list (same predicate as elsewhere);
+      // filtering MediaItems afterwards would be a no-op.
+      section.items.filterVideoSongs(hideVideos).flatMap { item ->
+        when (item) {
+          is SongItem -> {
+            if (hideExplicit && item.explicit) return@flatMap emptyList()
+            // Cache online metadata so playback resolves even if DB missed it
+            // (same stale-trackedMediaItem class of bugs as the addon queue).
+            try { database.query { insert(item.toMediaMetadata()) } } catch (_: Exception) {}
+            listOf(item.toMediaItem(parentId))
+          }
+          is PlaylistItem -> listOf(item.toBrowsableMediaItem())
+          else -> emptyList()
+        }
+      }.take(100)
+    } catch (e: Exception) {
+      reportException(e)
+      emptyList()
+    }
+  }
+
+  private suspend fun suggestedHomeSongs(): List<MediaItem> {
+    return try {
+      val home = YouTube.home()
+        .getOrNull()
+        ?.filterExplicit(context.dataStore.get(HideExplicitKey, false))
+        ?.filterVideoSongs(
+          context.dataStore.get(HideVideoSongsKey, false) ||
+            context.dataStore.get(echo.music.iad1tya.constants.DataSaverEnabledKey, false)
+        ) ?: return emptyList()
+      val songs = home.sections.flatMap { it.items }.filterIsInstance<SongItem>().take(50)
+      songs.forEach { item ->
+        try { database.query { insert(item.toMediaMetadata()) } } catch (_: Exception) {}
+      }
+      listOf(shuffleMediaItem(MusicService.HOME)) +
+        songs.map { it.toMediaItem("${MusicService.HOME_SECTION}/suggested") }
+    } catch (e: Exception) {
+      reportException(e)
+      emptyList()
+    }
+  }
+
   private suspend fun getMediaItem(mediaId: String, isAutomotive: Boolean = false): MediaItem? {
     val path = mediaId.split("/")
     val type = path.firstOrNull() ?: return null
 
     return when (type) {
       MusicService.ROOT -> rootMediaItem()
+      MusicService.HOME -> browsableMediaItem(
+        MusicService.HOME,
+        context.getString(R.string.home),
+        context.getString(R.string.home_desc),
+        drawableUri(R.drawable.home_filled),
+        MediaMetadata.MEDIA_TYPE_FOLDER_MIXED,
+        singleItemStyle = MediaConstants.EXTRAS_VALUE_CONTENT_STYLE_CATEGORY_GRID_ITEM,
+      )
+      MusicService.HOME_SECTION -> {
+        val sectionId = path.getOrNull(1) ?: return null
+        if (path.size == 2) {
+          homeSections().firstOrNull { it.mediaId == mediaId }
+        } else {
+          val songId = path.lastOrNull() ?: return null
+          if (songId == MusicService.SHUFFLE_ACTION) {
+            shuffleMediaItem(mediaId.removeSuffix("/$songId"))
+          } else {
+            database.song(songId).first()?.toMediaItem(mediaId.removeSuffix("/$songId"))
+              ?: homeSectionOnlineSong(sectionId, songId, mediaId.removeSuffix("/$songId"))
+          }
+        }
+      }
       MusicService.SONG -> {
         if (path.size == 1) {
           rootChildren().first { it.mediaId == MusicService.SONG }
@@ -966,6 +1160,29 @@ constructor(
       reportException(e)
       null
     }
+
+  private suspend fun homeSectionOnlineSong(
+    sectionId: String,
+    songId: String,
+    parentId: String,
+  ): MediaItem? {
+    if (sectionId == "suggested") {
+      return suggestedHomeSongs()
+        .firstOrNull { it.mediaId.endsWith("/$songId") }
+    }
+    val index = sectionId.toIntOrNull() ?: return null
+    return try {
+      val item = YouTube.home().getOrNull()
+        ?.sections?.getOrNull(index)
+        ?.items?.filterIsInstance<SongItem>()
+        ?.firstOrNull { it.id == songId } ?: return null
+      try { database.query { insert(item.toMediaMetadata()) } } catch (_: Exception) {}
+      item.toMediaItem(parentId)
+    } catch (e: Exception) {
+      reportException(e)
+      null
+    }
+  }
 
   private fun likedSongsMediaItem(songCount: Int) =
     browsableMediaItem(
