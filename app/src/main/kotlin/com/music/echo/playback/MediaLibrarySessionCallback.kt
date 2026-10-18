@@ -45,6 +45,7 @@ import echo.music.iad1tya.db.entities.PlaylistEntity
 import echo.music.iad1tya.db.entities.Song
 import echo.music.iad1tya.extensions.toMediaItem
 import echo.music.iad1tya.extensions.toggleRepeatMode
+import echo.music.iad1tya.utils.AutomotiveArtwork
 import echo.music.iad1tya.models.toMediaMetadata
 import echo.music.iad1tya.utils.dataStore
 import echo.music.iad1tya.utils.get
@@ -468,11 +469,29 @@ constructor(
             }
         }
 
-      LibraryResult.ofItemList(
-        children.paginate(page, pageSize),
-        params.withContentStyleHints(isAutomotive),
-      )
+      val paged = children.paginate(page, pageSize)
+      // Automotive surfaces render the same item at wildly different sizes and
+      // cannot fetch artwork themselves, so resolve it here and ship it with the
+      // item; otherwise covers only appear when the app is alive and warm.
+      val result =
+        if (isAutomotive) {
+          withAutomotiveArtwork(paged)
+        } else {
+          paged
+        }
+      LibraryResult.ofItemList(result, params.withContentStyleHints(isAutomotive))
     }
+  }
+
+  /**
+   * Resolves the artwork referenced by each item's `artworkUri` and embeds it in
+   * the item metadata. [MediaItem.mediaMetadata.artworkUri] is the single source
+   * of truth, so this works for local songs, YT items and Home shelves alike.
+   */
+  private suspend fun withAutomotiveArtwork(items: List<MediaItem>): List<MediaItem> {
+    if (items.isEmpty()) return items
+    val artUrls = items.map { it.mediaMetadata.artworkUri?.toString() }
+    return AutomotiveArtwork.attachAll(context, items, artUrls)
   }
 
   private fun isAutomotiveBrowser(browser: MediaSession.ControllerInfo): Boolean =
@@ -487,7 +506,9 @@ constructor(
   ): ListenableFuture<LibraryResult<MediaItem>> {
     val isAutomotive = isAutomotiveBrowser(browser)
     return scope.future(Dispatchers.IO) {
-      getMediaItem(mediaId, isAutomotive)?.let { LibraryResult.ofItem(it, null) }
+      getMediaItem(mediaId, isAutomotive)
+        ?.let { item -> if (isAutomotive) withAutomotiveArtwork(listOf(item)).first() else item }
+        ?.let { LibraryResult.ofItem(it, null) }
         ?: LibraryResult.ofError(SessionError.ERROR_UNKNOWN)
     }
   }
