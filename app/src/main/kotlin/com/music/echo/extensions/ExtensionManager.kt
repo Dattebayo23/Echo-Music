@@ -60,7 +60,16 @@ data class AddonStreamResponse(
 class ExtensionManager @Inject constructor(
     @ApplicationContext private val context: Context
 ) {
-    private val httpClient = OkHttpClient()
+    /**
+     * Addon requests run inside the player's blocking resolve path, so a
+     * configured-but-unreachable host must fail fast instead of stacking several
+     * default 10s timeouts per base and delaying the YouTube fallback.
+     */
+    private val httpClient = OkHttpClient.Builder()
+        .connectTimeout(5, java.util.concurrent.TimeUnit.SECONDS)
+        .readTimeout(8, java.util.concurrent.TimeUnit.SECONDS)
+        .callTimeout(12, java.util.concurrent.TimeUnit.SECONDS)
+        .build()
     private val ADDONS_KEY = stringPreferencesKey("extensions_addons_list")
     private val json = Json { ignoreUnknownKeys = true }
 
@@ -132,11 +141,14 @@ class ExtensionManager @Inject constructor(
      * when nothing matched, so track N+1 played track N audio. Now null means
      * "no usable replacement" and the caller falls back to YouTube.
      *
-     * Comparison is token based in both directions so catalogue naming variants
-     * still match ("Portami" vs "Portami via / Fabrizio Moro", "Live", deluxe
-     * suffixes, feature credits), while a genuinely different song does not:
-     * every token of the shorter side must be covered by the longer one.
-     * Duration is only used to break ties, never to reject.
+     * Catalogue naming variants still match ("Portami" vs "Portami via /
+     * Fabrizio Moro", live/deluxe suffixes, feature credits) because a token
+     * pair matches when one contains the other, but substring matching alone is
+     * too permissive: "Yes" is a substring of "Yesterday". A pair therefore only
+     * matches when the shorter token is at least [MIN_TOKEN_MATCH_LEN] characters
+     * and is a prefix of the longer, or the longer is a prefix of the shorter.
+     * Every token of the shorter side must be covered, which is what stops a
+     * different song from being substituted. Duration only breaks ties.
      */
     private fun selectBestMatch(
         tracks: List<AddonTrack>,
@@ -160,13 +172,10 @@ class ExtensionManager @Inject constructor(
             val gotTitle = normalizeForMatch(track.title)
             if (gotTitle.isBlank()) continue
             val gotTokens = gotTitle.split(" ").filter { it.isNotBlank() }
-            val covered =
-                gotTokens.count { got -> wantTokens.any { want -> got.contains(want) || want.contains(got) } }
-            val total = maxOf(gotTokens.size, wantTokens.size)
-            // Require every token of the shorter side to be covered, and at
-            // least half of the longer side so shared words alone don't qualify.
-            val coverage = covered.toFloat() / total
-            if (coverage < 0.5f) continue
+            if (!coversAllTokens(gotTokens, wantTokens)) continue
+            val coverage =
+                gotTokens.count { got -> wantTokens.any { want -> tokensMatch(got, want) } }
+                    .toFloat() / maxOf(gotTokens.size, wantTokens.size)
             // Full coverage of the catalogue title is the strongest signal.
             var score = (coverage * 100).toInt()
             val gotArtist = normalizeForMatch(track.artist)
@@ -183,6 +192,27 @@ class ExtensionManager @Inject constructor(
             }
         }
         return best
+    }
+
+    /**
+     * True when every token of the shorter list is matched by a token of the
+     * longer one. Extra words on the longer side are tolerated so catalogue
+     * decorations ("Portami via /") do not prevent a match, but a token of the
+     * shorter side with no counterpart does.
+     */
+    private fun coversAllTokens(shorter: List<String>, longer: List<String>): Boolean {
+        if (shorter.isEmpty() || longer.isEmpty()) return false
+        val (fewer, more) = if (shorter.size <= longer.size) shorter to longer else longer to shorter
+        return fewer.all { token -> more.any { tokensMatch(token, it) } }
+    }
+
+    /** Prefix-based token match with a minimum length, so "yes" != "yesterday". */
+    private fun tokensMatch(a: String, b: String): Boolean {
+        if (a == b) return true
+        val shorter = if (a.length <= b.length) a else b
+        val longer = if (a.length <= b.length) b else a
+        if (shorter.length < MIN_TOKEN_MATCH_LEN) return false
+        return longer.startsWith(shorter)
     }
 
     suspend fun search(query: String): List<SongItem> = withContext(Dispatchers.IO) {
@@ -271,9 +301,9 @@ class ExtensionManager @Inject constructor(
             // and letting playback drop to YouTube (Opus).
             val searchBases = buildList {
                 add(baseUrl)
+                val hostRoot = stripSourcePrefix(baseUrl)
                 BASE_ALTERNATIVES.forEach { alternative ->
-                    val candidate = baseUrl.substringBefore("/a").substringBefore("/b")
-                        .substringBefore("/c").removeSuffix("/") + alternative
+                    val candidate = hostRoot + alternative
                     if (candidate != baseUrl && candidate !in this) add(candidate)
                 }
             }
@@ -313,14 +343,47 @@ class ExtensionManager @Inject constructor(
                     }
                 } catch (e: Exception) {
                     android.util.Log.e("ExtensionManager", "Addon request failed for $searchBase", e)
+                    // A connection-level failure applies to every base on the same
+                    // host, so retrying the other prefixes only adds timeouts
+                    // before playback can fall back. Stop here.
+                    if (isConnectionFailure(e)) break
                 }
             }
         }
         null
     }
 
+    /** Connection-level failures (DNS, refused, timeout) are host-wide, not path-specific. */
+    private fun isConnectionFailure(error: Exception): Boolean =
+        error is java.io.IOException && error !is java.io.FileNotFoundException
+
+    /**
+     * Removes a trailing BitChord source prefix ("/a", "/b", "/c") from a base URL.
+     *
+     * Only the last path segment is considered: a plain substring search would
+     * also match inside the scheme ("https://host" contains "/a" in "//a…"), which
+     * truncated the URL to "https:/" and produced unusable candidates.
+     */
+    private fun stripSourcePrefix(baseUrl: String): String {
+        val trimmed = baseUrl.removeSuffix("/")
+        val lastSlash = trimmed.lastIndexOf('/')
+        if (lastSlash < 0) return trimmed
+        val schemeEnd = trimmed.indexOf("://")
+        // Do not treat the scheme separator as a path segment boundary.
+        if (schemeEnd >= 0 && lastSlash <= schemeEnd + 2) return trimmed
+        val lastSegment = trimmed.substring(lastSlash + 1)
+        return if (SOURCE_PREFIXES.contains(lastSegment)) {
+            trimmed.substring(0, lastSlash)
+        } else {
+            trimmed
+        }
+    }
+
     private companion object {
         /** Isolated BitChord source prefixes tried when the configured one fails. */
         val BASE_ALTERNATIVES = listOf("", "/c", "/a")
+        val SOURCE_PREFIXES = setOf("a", "b", "c")
+        /** Shortest token pair accepted as a title match, so "yes" != "yesterday". */
+        const val MIN_TOKEN_MATCH_LEN = 3
     }
 }

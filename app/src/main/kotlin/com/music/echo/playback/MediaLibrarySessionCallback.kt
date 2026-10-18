@@ -330,7 +330,9 @@ constructor(
       // instead of an empty list so Auto shows recommended music.
       if (parentId == MusicService.ROOT && params?.isSuggested == true) {
         return@future LibraryResult.ofItemList(
-          suggestedHomeSongs().paginate(page, pageSize),
+          // Suggested/Recent bypassed artwork embedding, so their covers were
+          // URI-only and unreliable on automotive surfaces.
+          withAutomotiveArtworkIfNeeded(isAutomotive, suggestedHomeSongs().paginate(page, pageSize)),
           params.withContentStyleHints(isAutomotive),
         )
       }
@@ -338,7 +340,7 @@ constructor(
         val recent = database.songsByCreateDateAsc().first().take(50)
           .map { it.toMediaItem(MusicService.SONG) }
         return@future LibraryResult.ofItemList(
-          recent.paginate(page, pageSize),
+          withAutomotiveArtworkIfNeeded(isAutomotive, recent.paginate(page, pageSize)),
           params.withContentStyleHints(isAutomotive),
         )
       }
@@ -488,6 +490,11 @@ constructor(
    * the item metadata. [MediaItem.mediaMetadata.artworkUri] is the single source
    * of truth, so this works for local songs, YT items and Home shelves alike.
    */
+  private suspend fun withAutomotiveArtworkIfNeeded(
+    isAutomotive: Boolean,
+    items: List<MediaItem>
+  ): List<MediaItem> = if (isAutomotive) withAutomotiveArtwork(items) else items
+
   private suspend fun withAutomotiveArtwork(items: List<MediaItem>): List<MediaItem> {
     if (items.isEmpty()) return items
     val artUrls = items.map { it.mediaMetadata.artworkUri?.toString() }

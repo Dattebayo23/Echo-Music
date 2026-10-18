@@ -47,7 +47,21 @@ object AutomotiveArtwork {
   /** Keep onGetChildren responsive: after this the item is served without art. */
   private const val LOAD_TIMEOUT_MS = 3000L
 
-  private const val JPEG_QUALITY = 85
+  private const val JPEG_QUALITY = 80
+
+  /**
+   * Browsers may request a whole library in one call (`pageSize = Int.MAX_VALUE`).
+   * Each cover is a load plus a JPEG encode, so an unbounded batch can exhaust the
+   * app process on a large library, and the resulting parcel can exceed Media3's
+   * 256 KiB browse payload limit, which silently truncates the list.
+   */
+  private const val MAX_ITEMS_PER_RESPONSE = 60
+
+  /** Total embedded artwork bytes per browse response; keeps the parcel bounded. */
+  private const val MAX_TOTAL_BYTES = 160 * 1024
+
+  /** Concurrent decodes, so a cold cache does not fire hundreds of requests at once. */
+  private const val MAX_CONCURRENT_LOADS = 4
 
   /**
    * Attaches artwork to [item] when [artUrl] resolves within [LOAD_TIMEOUT_MS].
@@ -67,15 +81,26 @@ object AutomotiveArtwork {
       artUrls.getOrNull(i)?.isNotBlank() == true && !hasArtwork(items[i])
     }
     if (pending.isEmpty()) return items
+    // Bounded batch: cap how many items are touched and how many bytes end up in
+    // the parcel, so a huge unpaginated request cannot stall or truncate browsing.
+    val budgeted = pending.take(MAX_ITEMS_PER_RESPONSE)
     val loaded =
       coroutineScope {
-        pending.map { index ->
-          async(Dispatchers.IO) { loadArtworkData(context, artUrls[index].orEmpty()) }
-        }.map { it.await() }
+        budgeted
+          .chunked(MAX_CONCURRENT_LOADS)
+          .map { chunk ->
+            chunk.map { index ->
+              async(Dispatchers.IO) { loadArtworkData(context, artUrls[index].orEmpty()) }
+            }
+          }
+          .flatMap { chunk -> chunk.map { it.await() } }
       }
     val result = items.toMutableList()
-    pending.forEachIndexed { slot, index ->
+    var spent = 0
+    budgeted.forEachIndexed { slot, index ->
       val data = loaded.getOrNull(slot) ?: return@forEachIndexed
+      if (spent + data.size > MAX_TOTAL_BYTES) return@forEachIndexed
+      spent += data.size
       result[index] = withArtworkData(result[index], data)
     }
     return result
