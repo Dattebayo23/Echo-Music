@@ -5,6 +5,7 @@ import android.content.Context
 import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.Bundle
+import android.os.SystemClock
 import androidx.annotation.DrawableRes
 import androidx.core.net.toUri
 import androidx.media3.common.C
@@ -60,6 +61,8 @@ import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.guava.future
 import kotlinx.coroutines.plus
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 
 @androidx.annotation.OptIn(UnstableApi::class)
 class MediaLibrarySessionCallback
@@ -78,6 +81,9 @@ constructor(
   /** Cached YouTube Home snapshot (see [youtubeHome]) and when it was fetched. */
   private var cachedHome: HomePage? = null
   private var cachedHomeAtMs = 0L
+
+  /** Serializes the Home snapshot refresh so concurrent misses cannot race. */
+  private val homeMutex = Mutex()
 
   /**
    * Package names [MediaSession.isAutomotiveController] and
@@ -975,10 +981,16 @@ constructor(
    * different shelf — and could even point an existing node at another shelf's
    * children. Serving a cached snapshot keeps the section set and its indices
    * stable for the whole browsing session.
+   *
+   * The refresh is serialized by [homeMutex] because `onGetChildren` and
+   * `onSetMediaItems` run on independent IO coroutines: without it, two
+   * concurrent misses could install two different snapshots. The TTL uses
+   * [SystemClock.elapsedRealtime] so a wall-clock adjustment cannot expire the
+   * cache early and swap the snapshot mid-browse.
    */
-  private suspend fun youtubeHome(): HomePage? {
-    val now = System.currentTimeMillis()
-    cachedHome?.let { if (now - cachedHomeAtMs < HOME_CACHE_TTL_MS) return it }
+  private suspend fun youtubeHome(): HomePage? = homeMutex.withLock {
+    val now = SystemClock.elapsedRealtime()
+    cachedHome?.let { if (now - cachedHomeAtMs < HOME_CACHE_TTL_MS) return@withLock it }
     val fetched =
       try {
         YouTube.home().getOrNull()
@@ -989,9 +1001,10 @@ constructor(
     if (fetched != null) {
       cachedHome = fetched
       cachedHomeAtMs = now
-      return fetched
+      fetched
+    } else {
+      cachedHome
     }
-    return cachedHome
   }
 
   /**

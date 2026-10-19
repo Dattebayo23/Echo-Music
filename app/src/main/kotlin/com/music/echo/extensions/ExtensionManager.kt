@@ -219,12 +219,17 @@ class ExtensionManager @Inject constructor(
 
     /**
      * True when the requested artist and the catalogue artist share at least one
-     * token exactly. Equality (not prefix) is used so short names do not collide,
-     * e.g. "Queen" must not match "Queens of the Stone Age".
+     * significant token exactly. Generic function/credit markers ("the", "and",
+     * "feat", ...) are ignored, otherwise "The Fray" and "The Band" would both
+     * match on "the" and a same-titled song by another artist would pass. The
+     * remaining tokens keep a 2-character minimum so meaningful short names such
+     * as "dj", "mc", "lil" and "los" still match.
      */
     private fun artistMatches(want: List<String>, got: List<String>): Boolean {
-        if (want.isEmpty() || got.isEmpty()) return false
-        return want.any { it in got }
+        val wantSig = want.filter { it.length >= 2 && it !in ARTIST_STOP_TOKENS }
+        val gotSig = got.filter { it.length >= 2 && it !in ARTIST_STOP_TOKENS }
+        if (wantSig.isEmpty() || gotSig.isEmpty()) return false
+        return wantSig.any { it in gotSig }
     }
 
     /**
@@ -479,5 +484,12 @@ class ExtensionManager @Inject constructor(
 
         /** Credit markers that decorate a title without changing the song. */
         val CREDIT_TOKENS = setOf("feat", "ft", "featuring", "prod")
+
+        /**
+         * Tokens that are too generic to prove two artists are the same. Excluded
+         * from the artist gate so "The Fray" cannot match "The Band" on "the".
+         */
+        val ARTIST_STOP_TOKENS =
+            setOf("the", "and", "of", "with", "feat", "ft", "featuring", "prod", "vs")
     }
 }
