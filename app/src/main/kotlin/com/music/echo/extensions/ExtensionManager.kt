@@ -239,13 +239,21 @@ class ExtensionManager @Inject constructor(
         return fewer.all { token -> more.any { tokensMatch(token, it) } }
     }
 
-    /** Prefix-based token match with a minimum length, so "yes" != "yesterday". */
+    /**
+     * Token match: equality, or a short inflection-style prefix ("love" vs
+     * "lover", "run" vs "running"). A prefix must be at least
+     * [MIN_TOKEN_MATCH_LEN] characters *and* the longer token may exceed it by at
+     * most [MAX_PREFIX_SUFFIX_LEN] characters. The length minimum alone was not
+     * enough: a three-character prefix like "yes" still matched "yesterday", so
+     * the suffix bound is what actually rejects unrelated words.
+     */
     private fun tokensMatch(a: String, b: String): Boolean {
         if (a == b) return true
         val shorter = if (a.length <= b.length) a else b
         val longer = if (a.length <= b.length) b else a
         if (shorter.length < MIN_TOKEN_MATCH_LEN) return false
-        return longer.startsWith(shorter)
+        return longer.startsWith(shorter) &&
+          longer.length - shorter.length <= MAX_PREFIX_SUFFIX_LEN
     }
 
     suspend fun search(query: String): List<SongItem> = withContext(Dispatchers.IO) {
@@ -450,6 +458,13 @@ class ExtensionManager @Inject constructor(
         val SOURCE_PREFIXES = setOf("a", "b", "c")
         /** Shortest token pair accepted as a title match, so "yes" != "yesterday". */
         const val MIN_TOKEN_MATCH_LEN = 3
+
+        /**
+         * Longest suffix a longer token may have over a shorter prefix token for
+         * the pair to still count as the same word ("love"/"lover" = 1,
+         * "run"/"running" = 4). Bounds "yes" vs "yesterday" (6) out.
+         */
+        const val MAX_PREFIX_SUFFIX_LEN = 4
 
         /**
          * Tokens that describe a specific rendition of a song. Unless the user
