@@ -49,6 +49,13 @@ object AutomotiveArtwork {
   /** Keep onGetChildren responsive: after this the item is served without art. */
   private const val LOAD_TIMEOUT_MS = 3000L
 
+  /**
+   * Now-playing artwork is not on a browse-response critical path: the player can
+   * keep streaming while the cover resolves and update the metadata afterwards.
+   * A cold cover fetch can easily exceed the browse budget, so allow a bit more.
+   */
+  private const val PLAYBACK_LOAD_TIMEOUT_MS = 8000L
+
   private const val JPEG_QUALITY = 80
 
   /**
@@ -125,6 +132,22 @@ object AutomotiveArtwork {
     return result
   }
 
+  /**
+   * Resolves the compressed cover for the item that is currently playing.
+   *
+   * Unlike [attach] this is not bounded by the browse-response budget: the caller
+   * updates the player metadata when the bytes are ready. The result is cached in
+   * the same [artworkCache] used by the browse tree, so browsing a list and then
+   * playing one of its items usually resolves without another network request.
+   *
+   * Returns null when the URL is blank, the load fails, or it exceeds
+   * [PLAYBACK_LOAD_TIMEOUT_MS]; callers keep the item unchanged in that case.
+   */
+  suspend fun loadForPlayback(context: Context, artUrl: String?): ByteArray? {
+    val url = artUrl?.takeIf { it.isNotBlank() } ?: return null
+    return loadArtworkData(context, url, PLAYBACK_LOAD_TIMEOUT_MS)
+  }
+
   /** Size the controller asked for, defaulting to a sensible cover size. */
   fun requestedArtSize(params: androidx.media3.session.MediaLibraryService.LibraryParams?): Size {
     val hint =
@@ -155,11 +178,15 @@ object AutomotiveArtwork {
    * timeout or failure; callers treat artwork as cosmetic and never fail because
    * of it.
    */
-  private suspend fun loadArtworkData(context: Context, artUrl: String): ByteArray? {
+  private suspend fun loadArtworkData(
+    context: Context,
+    artUrl: String,
+    timeoutMs: Long = LOAD_TIMEOUT_MS,
+  ): ByteArray? {
     if (artUrl.isBlank()) return null
     artworkCache.get(artUrl)?.let { return it }
     val data =
-      withTimeoutOrNull(LOAD_TIMEOUT_MS) {
+      withTimeoutOrNull(timeoutMs) {
         try {
           val request =
             ImageRequest.Builder(context)

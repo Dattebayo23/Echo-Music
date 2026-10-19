@@ -78,6 +78,13 @@ constructor(
   var toggleStartRadio: () -> Unit = {}
   var toggleLibrary: () -> Unit = {}
 
+  /**
+   * Invoked when an automotive controller connects. Used to embed the artwork of
+   * the item already playing, which otherwise never goes through a media-item
+   * transition while the car is connected.
+   */
+  var onAutomotiveConnected: () -> Unit = {}
+
   /** Cached YouTube Home snapshot (see [youtubeHome]) and when it was fetched. */
   private var cachedHome: HomePage? = null
   private var cachedHomeAtMs = 0L
@@ -168,6 +175,10 @@ constructor(
       } else {
         connectionResult.availableSessionCommands
       }
+
+    if (isAutomotiveBrowser(controller)) {
+      onAutomotiveConnected()
+    }
 
     return MediaSession.ConnectionResult.accept(
       availableSessionCommands,

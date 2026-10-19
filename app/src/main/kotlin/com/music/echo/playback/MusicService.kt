@@ -167,6 +167,7 @@ import echo.music.iad1tya.playback.queues.YouTubeQueue
 import echo.music.iad1tya.playback.queues.filterExplicit
 import echo.music.iad1tya.playback.queues.filterVideoSongs
 import echo.music.iad1tya.ui.screens.settings.DiscordPresenceManager
+import echo.music.iad1tya.utils.AutomotiveArtwork
 import echo.music.iad1tya.utils.CoilBitmapLoader
 import echo.music.iad1tya.utils.NetworkConnectivityObserver
 import echo.music.iad1tya.utils.ScrobbleManager
@@ -253,6 +254,9 @@ class MusicService : MediaLibraryService(), Player.Listener, PlaybackStatsListen
   private var trackedDurationMs: Long = 0L
   private var trackedAccumulatedPlayMs: Long = 0L
   private var trackedPlayStartTs: Long = 0L
+
+  /** Resolves and embeds the current cover; cancelled when the track changes. */
+  private var currentArtworkJob: Job? = null
 
   private lateinit var audioManager: AudioManager
   // Wi-Fi Lock: Prevents modern Wi-Fi 6/7 routers from putting the Wi-Fi chip into
@@ -710,6 +714,7 @@ class MusicService : MediaLibraryService(), Player.Listener, PlaybackStatsListen
       toggleLike = ::toggleLike
       toggleStartRadio = ::toggleStartRadio
       toggleLibrary = ::toggleLibrary
+      onAutomotiveConnected = { refreshCurrentItemArtwork(player.currentMediaItem) }
     }
     mediaSession =
       MediaLibrarySession.Builder(this, player, mediaLibrarySessionCallback)
@@ -2631,6 +2636,54 @@ class MusicService : MediaLibraryService(), Player.Listener, PlaybackStatsListen
     if (dataStore.get(PersistentQueueKey, true)) {
       saveQueueToDisk()
     }
+
+    refreshCurrentItemArtwork(mediaItem)
+  }
+
+  /**
+   * Embeds the cover bytes in the item that is currently playing.
+   *
+   * Android Auto and the Automotive OS cluster receive the current item's
+   * [MediaMetadata] and resolve its artwork themselves. When only
+   * [MediaMetadata.artworkUri] is present, that means a second fetch from another
+   * process/surface: the dashboard and the compact Auto layouts often fail it or
+   * race the URL, and fall back to the app icon, even though the phone UI (which
+   * uses Coil directly) shows the cover. [MediaMetadata.artworkData] needs no
+   * fetch, so every consumer can decode the same bytes immediately.
+   *
+   * The load happens off the playback path and the item is replaced only if it is
+   * still the current one; a failed load leaves the track untouched.
+   */
+  private fun refreshCurrentItemArtwork(mediaItem: MediaItem?) {
+    if (mediaItem == null || mediaItem.mediaMetadata.artworkData != null) return
+    val artUrl =
+      mediaItem.mediaMetadata.artworkUri?.toString()
+        ?: mediaItem.metadata?.thumbnailUrl
+        ?: return
+    val mediaId = mediaItem.mediaId
+    currentArtworkJob?.cancel()
+    currentArtworkJob =
+      scope.launch {
+        val data = AutomotiveArtwork.loadForPlayback(this@MusicService, artUrl) ?: return@launch
+        withContext(Dispatchers.Main) {
+          if (!::player.isInitialized) return@withContext
+          val current = player.currentMediaItem ?: return@withContext
+          if (current.mediaId != mediaId || current.mediaMetadata.artworkData != null) {
+            return@withContext
+          }
+          val index = player.currentMediaItemIndex
+          if (index == C.INDEX_UNSET) return@withContext
+          player.replaceMediaItem(
+            index,
+            current
+              .buildUpon()
+              .setMediaMetadata(
+                current.mediaMetadata.buildUpon().setArtworkData(data).build()
+              )
+              .build()
+          )
+        }
+      }
   }
 
   override fun onPlaybackStateChanged(
