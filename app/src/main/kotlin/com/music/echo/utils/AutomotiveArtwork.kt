@@ -20,6 +20,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 import timber.log.Timber
 
@@ -200,7 +201,9 @@ object AutomotiveArtwork {
             result = context.imageLoader.execute(request.newBuilder().networkCachePolicy(CachePolicy.READ_ONLY).build())
           }
           when (result) {
-            is SuccessResult -> compress(result.image.toBitmap())
+            // Bitmap.compress can take a long time; keep it off the caller's
+            // thread (the playback path calls this from Dispatchers.Main).
+            is SuccessResult -> withContext(Dispatchers.Default) { compress(result.image.toBitmap()) }
             is ErrorResult -> null
           }
         } catch (e: Exception) {

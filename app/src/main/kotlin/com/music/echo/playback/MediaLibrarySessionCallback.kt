@@ -176,7 +176,9 @@ constructor(
         connectionResult.availableSessionCommands
       }
 
-    if (isAutomotiveBrowser(controller)) {
+    // The reported package name alone is not verified; require the UID check
+    // so an arbitrary controller cannot trigger the artwork refresh.
+    if (isVerifiedAutomotiveController(controller)) {
       onAutomotiveConnected()
     }
 

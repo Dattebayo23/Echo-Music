@@ -2663,7 +2663,7 @@ class MusicService : MediaLibraryService(), Player.Listener, PlaybackStatsListen
     val mediaId = mediaItem.mediaId
     currentArtworkJob?.cancel()
     currentArtworkJob =
-      scope.launch {
+      scope.launch(Dispatchers.IO) {
         val data = AutomotiveArtwork.loadForPlayback(this@MusicService, artUrl) ?: return@launch
         withContext(Dispatchers.Main) {
           if (!::player.isInitialized) return@withContext
@@ -4997,6 +4997,9 @@ class MusicService : MediaLibraryService(), Player.Listener, PlaybackStatsListen
     // the outgoing (soon-to-be-released) session, so the incoming track plays
     // without normalization/EQ.
     currentMediaMetadata.value = player.currentMetadata
+    // Same reason: no transition fires for the incoming player, so embed its
+    // cover bytes here or the crossfaded track stays URI-only on Auto.
+    refreshCurrentItemArtwork(player.currentMediaItem)
     val oldSessionId = fadingPlayer?.audioSessionId
     // Keep the current enhancer (still bound to the outgoing session) alive and attached
     // through the fade instead of releasing it, so the outgoing track stays normalized

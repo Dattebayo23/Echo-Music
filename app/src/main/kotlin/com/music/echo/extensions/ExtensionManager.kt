@@ -368,10 +368,11 @@ class ExtensionManager @Inject constructor(
                 // rescued by trying the next base, so those are handled below.
                 val searchResponse = try {
                     httpClient.newCall(Request.Builder().url(searchUrl).build()).execute()
-                } catch (e: java.io.IOException) {
-                    android.util.Log.e("ExtensionManager", "Addon connection failed for $searchBase", e)
-                    break
                 } catch (e: Exception) {
+                    if (isHostUnreachable(e)) {
+                        android.util.Log.e("ExtensionManager", "Addon connection failed for $searchBase", e)
+                        break
+                    }
                     android.util.Log.e("ExtensionManager", "Addon request failed for $searchBase", e)
                     continue
                 }
@@ -407,8 +408,21 @@ class ExtensionManager @Inject constructor(
 
                 android.util.Log.e("ExtensionManager", "Matched track: ${match.title} by ${match.artist}. Fetching stream...")
                 val streamUrlReq = "${searchBase.removeSuffix("/")}/stream/${Uri.encode(match.id)}?quality=LOSSLESS"
+                val streamResponse = try {
+                    httpClient.newCall(Request.Builder().url(streamUrlReq).build()).execute()
+                } catch (e: Exception) {
+                    if (isHostUnreachable(e)) {
+                        // A connection-level failure applies to every base on the same
+                        // host, so retrying the other prefixes only adds timeouts
+                        // before playback can fall back. Stop here.
+                        android.util.Log.e("ExtensionManager", "Addon stream connection failed for $searchBase", e)
+                        break
+                    }
+                    android.util.Log.e("ExtensionManager", "Addon stream request failed for $searchBase", e)
+                    continue
+                }
                 val streamData = try {
-                    httpClient.newCall(Request.Builder().url(streamUrlReq).build()).execute().use { streamRes ->
+                    streamResponse.use { streamRes ->
                         val streamBody = streamRes.body?.string()
                         if (streamRes.isSuccessful && !streamBody.isNullOrEmpty()) {
                             android.util.Log.e("ExtensionManager", "Stream response: $streamBody")
@@ -418,12 +432,6 @@ class ExtensionManager @Inject constructor(
                             null
                         }
                     }
-                } catch (e: java.io.IOException) {
-                    // A connection-level failure applies to every base on the same
-                    // host, so retrying the other prefixes only adds timeouts
-                    // before playback can fall back. Stop here.
-                    android.util.Log.e("ExtensionManager", "Addon stream connection failed for $searchBase", e)
-                    break
                 } catch (e: Exception) {
                     android.util.Log.e("ExtensionManager", "Addon stream response failed for $searchBase", e)
                     null
@@ -433,6 +441,22 @@ class ExtensionManager @Inject constructor(
             }
         }
         null
+    }
+
+    /**
+     * True when [e], thrown by `Call.execute()`, means the host itself could not be
+     * reached (DNS, refused, no route, connect timeout). Only these apply to every
+     * base on the same host; read timeouts, TLS and protocol errors come from a
+     * reachable server and may not affect the other prefixes.
+     */
+    private fun isHostUnreachable(e: Exception): Boolean = when (e) {
+        is java.net.UnknownHostException,
+        is java.net.ConnectException,
+        is java.net.NoRouteToHostException -> true
+        // OkHttp reports a connect timeout as SocketTimeoutException("connect timed out"),
+        // the same type as a read timeout, so tell them apart by message.
+        is java.net.SocketTimeoutException -> e.message?.contains("connect", ignoreCase = true) == true
+        else -> false
     }
 
     /**
