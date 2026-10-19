@@ -50,6 +50,9 @@ object AutomotiveArtwork {
   /** Keep onGetChildren responsive: after this the item is served without art. */
   private const val LOAD_TIMEOUT_MS = 3000L
 
+  /** Upper bound for all artwork loads of one browse response. */
+  private const val BATCH_TIMEOUT_MS = 4000L
+
   /**
    * Now-playing artwork is not on a browse-response critical path: the player can
    * keep streaming while the cover resolves and update the metadata afterwards.
@@ -108,24 +111,31 @@ object AutomotiveArtwork {
     // Bounded batch: cap how many items are touched and how many bytes end up in
     // the parcel, so a huge unpaginated request cannot stall or truncate browsing.
     val budgeted = pending.take(MAX_ITEMS_PER_RESPONSE)
-    val loaded =
+    val loaded = arrayOfNulls<ByteArray>(budgeted.size)
+    // Each chunk can take up to LOAD_TIMEOUT_MS, so bound the whole batch too or a
+    // large page keeps the browse response pending for tens of seconds. Covers that
+    // resolved before the deadline are kept; the rest are served URI-only.
+    withTimeoutOrNull(BATCH_TIMEOUT_MS) {
       coroutineScope {
-        budgeted
+        budgeted.indices
           .chunked(MAX_CONCURRENT_LOADS)
           // Await each chunk before starting the next: collecting every chunk's
           // deferreds first would start all loads at once and defeat the cap.
-          .flatMap { chunk ->
+          .forEach { chunk ->
             chunk
-              .map { index ->
-                async(Dispatchers.IO) { loadArtworkData(context, artUrls[index].orEmpty()) }
+              .map { slot ->
+                async(Dispatchers.IO) {
+                  loaded[slot] = loadArtworkData(context, artUrls[budgeted[slot]].orEmpty())
+                }
               }
               .awaitAll()
           }
       }
+    }
     val result = items.toMutableList()
     var spent = 0
     budgeted.forEachIndexed { slot, index ->
-      val data = loaded.getOrNull(slot) ?: return@forEachIndexed
+      val data = loaded[slot] ?: return@forEachIndexed
       if (spent + data.size > MAX_TOTAL_BYTES) return@forEachIndexed
       spent += data.size
       result[index] = withArtworkData(result[index], data)
