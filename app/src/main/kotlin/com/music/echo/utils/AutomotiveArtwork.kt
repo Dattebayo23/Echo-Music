@@ -3,6 +3,7 @@ package echo.music.iad1tya.utils
 import android.content.Context
 import android.graphics.Bitmap
 import android.net.Uri
+import android.util.LruCache
 import android.util.Size
 import androidx.media3.common.MediaItem
 import androidx.media3.common.MediaMetadata
@@ -17,6 +18,7 @@ import coil3.toBitmap
 import java.io.ByteArrayOutputStream
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.withTimeoutOrNull
 import timber.log.Timber
@@ -64,6 +66,20 @@ object AutomotiveArtwork {
   private const val MAX_CONCURRENT_LOADS = 4
 
   /**
+   * Decoded-and-compressed covers keyed by source URL. The dashboard/cockpit and
+   * the phone UI request the same tracks independently; without this, each
+   * surface re-decodes from scratch and a surface that arrives with a cold Coil
+   * cache (or after the [LOAD_TIMEOUT_MS] window) got no artwork at all. Once any
+   * surface resolves a cover, every later request is served from memory.
+   */
+  private const val MAX_CACHE_BYTES = 8 * 1024 * 1024
+
+  private val artworkCache =
+    object : LruCache<String, ByteArray>(MAX_CACHE_BYTES) {
+      override fun sizeOf(key: String, value: ByteArray): Int = value.size
+    }
+
+  /**
    * Attaches artwork to [item] when [artUrl] resolves within [LOAD_TIMEOUT_MS].
    * Never throws and never fails a browse request: artwork is cosmetic.
    */
@@ -88,12 +104,15 @@ object AutomotiveArtwork {
       coroutineScope {
         budgeted
           .chunked(MAX_CONCURRENT_LOADS)
-          .map { chunk ->
-            chunk.map { index ->
-              async(Dispatchers.IO) { loadArtworkData(context, artUrls[index].orEmpty()) }
-            }
+          // Await each chunk before starting the next: collecting every chunk's
+          // deferreds first would start all loads at once and defeat the cap.
+          .flatMap { chunk ->
+            chunk
+              .map { index ->
+                async(Dispatchers.IO) { loadArtworkData(context, artUrls[index].orEmpty()) }
+              }
+              .awaitAll()
           }
-          .flatMap { chunk -> chunk.map { it.await() } }
       }
     val result = items.toMutableList()
     var spent = 0
@@ -130,29 +149,41 @@ object AutomotiveArtwork {
       )
       .build()
 
-  private suspend fun loadArtworkData(context: Context, artUrl: String): ByteArray? =
-    withTimeoutOrNull(LOAD_TIMEOUT_MS) {
-      try {
-        val request =
-          ImageRequest.Builder(context)
-            .data(Uri.parse(artUrl))
-            .size(ARTWORK_SIZE_PX, ARTWORK_SIZE_PX)
-            .allowHardware(false)
-            .build()
-        var result = context.imageLoader.execute(request)
-        if (result is ErrorResult) {
-          // Retry from Coil's disk cache only: never hold a browse response on the network.
-          result = context.imageLoader.execute(request.newBuilder().networkCachePolicy(CachePolicy.READ_ONLY).build())
+  /**
+   * Loads and compresses the cover at [artUrl], consulting the in-memory
+   * [artworkCache] first and storing the result on success. Returns null on
+   * timeout or failure; callers treat artwork as cosmetic and never fail because
+   * of it.
+   */
+  private suspend fun loadArtworkData(context: Context, artUrl: String): ByteArray? {
+    if (artUrl.isBlank()) return null
+    artworkCache.get(artUrl)?.let { return it }
+    val data =
+      withTimeoutOrNull(LOAD_TIMEOUT_MS) {
+        try {
+          val request =
+            ImageRequest.Builder(context)
+              .data(Uri.parse(artUrl))
+              .size(ARTWORK_SIZE_PX, ARTWORK_SIZE_PX)
+              .allowHardware(false)
+              .build()
+          var result = context.imageLoader.execute(request)
+          if (result is ErrorResult) {
+            // Retry from Coil's disk cache only: never hold a browse response on the network.
+            result = context.imageLoader.execute(request.newBuilder().networkCachePolicy(CachePolicy.READ_ONLY).build())
+          }
+          when (result) {
+            is SuccessResult -> compress(result.image.toBitmap())
+            is ErrorResult -> null
+          }
+        } catch (e: Exception) {
+          Timber.tag(TAG).w(e, "Artwork load failed")
+          null
         }
-        when (result) {
-          is SuccessResult -> compress(result.image.toBitmap())
-          is ErrorResult -> null
-        }
-      } catch (e: Exception) {
-        Timber.tag(TAG).w(e, "Artwork load failed")
-        null
-      }
-    }
+      } ?: return null
+    artworkCache.put(artUrl, data)
+    return data
+  }
 
   private fun compress(bitmap: Bitmap): ByteArray? =
     try {

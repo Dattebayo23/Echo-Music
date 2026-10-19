@@ -75,6 +75,10 @@ constructor(
   var toggleStartRadio: () -> Unit = {}
   var toggleLibrary: () -> Unit = {}
 
+  /** Cached YouTube Home snapshot (see [youtubeHome]) and when it was fetched. */
+  private var cachedHome: HomePage? = null
+  private var cachedHomeAtMs = 0L
+
   /**
    * Package names [MediaSession.isAutomotiveController] and
    * [MediaSession.isAutoCompanionController] treat as automotive/companion surfaces. Media3 1.7.1
@@ -381,8 +385,7 @@ constructor(
             val downloadedSongCount = downloadUtil.downloads.value.size
             val youtubePlaylists =
               try {
-                YouTube.home()
-                  .getOrNull()
+                youtubeHome()
                   ?.sections
                   ?.flatMap { it.items }
                   ?.filterIsInstance<PlaylistItem>()
@@ -962,14 +965,43 @@ constructor(
     }
 
   /**
+   * One Home snapshot per [HOME_CACHE_TTL_MS], shared by every automotive browse
+   * call.
+   *
+   * YouTube's Home feed is personalized per request: two consecutive fetches can
+   * return different shelves, or the same shelves in a different order. The tree
+   * is built from indices into that list, so a rotating feed made shelves such as
+   * "Mixtape per te" appear and disappear between visits — replaced by a
+   * different shelf — and could even point an existing node at another shelf's
+   * children. Serving a cached snapshot keeps the section set and its indices
+   * stable for the whole browsing session.
+   */
+  private suspend fun youtubeHome(): HomePage? {
+    val now = System.currentTimeMillis()
+    cachedHome?.let { if (now - cachedHomeAtMs < HOME_CACHE_TTL_MS) return it }
+    val fetched =
+      try {
+        YouTube.home().getOrNull()
+      } catch (e: Exception) {
+        reportException(e)
+        null
+      }
+    if (fetched != null) {
+      cachedHome = fetched
+      cachedHomeAtMs = now
+      return fetched
+    }
+    return cachedHome
+  }
+
+  /**
    * YouTube Home sections (Quick picks, Keep listening, charts...) as browsable
    * Auto nodes. Previously Auto only showed local Songs/Artists/Albums/Playlists,
    * so YT-generated playlists and recommendations were invisible.
    */
   private suspend fun homeSections(): List<MediaItem> {
     return try {
-      val home = YouTube.home()
-        .getOrNull()
+      val home = youtubeHome()
         ?.filterExplicit(context.dataStore.get(HideExplicitKey, false))
         ?.filterVideoSongs(
           context.dataStore.get(HideVideoSongsKey, false) ||
@@ -1016,7 +1048,7 @@ constructor(
 
   private suspend fun homeSectionSongs(sectionIndex: Int, parentId: String): List<MediaItem> {
     return try {
-      val home = YouTube.home().getOrNull() ?: return emptyList()
+      val home = youtubeHome() ?: return emptyList()
       val section = home.sections.getOrNull(sectionIndex) ?: return emptyList()
       val hideExplicit = context.dataStore.get(HideExplicitKey, false)
       val hideVideos = context.dataStore.get(HideVideoSongsKey, false) ||
@@ -1044,8 +1076,7 @@ constructor(
 
   private suspend fun suggestedHomeSongs(): List<MediaItem> {
     return try {
-      val home = YouTube.home()
-        .getOrNull()
+      val home = youtubeHome()
         ?.filterExplicit(context.dataStore.get(HideExplicitKey, false))
         ?.filterVideoSongs(
           context.dataStore.get(HideVideoSongsKey, false) ||
@@ -1226,7 +1257,7 @@ constructor(
     }
     val index = sectionId.toIntOrNull() ?: return null
     return try {
-      val item = YouTube.home().getOrNull()
+      val item = youtubeHome()
         ?.sections?.getOrNull(index)
         ?.items?.filterIsInstance<SongItem>()
         ?.firstOrNull { it.id == songId } ?: return null
@@ -1425,5 +1456,14 @@ constructor(
     if (fromIndex >= size) return emptyList()
 
     return subList(fromIndex.toInt(), minOf(fromIndex.toInt() + pageSize, size))
+  }
+
+  private companion object {
+    /**
+     * How long a YouTube Home snapshot is reused for automotive browse calls.
+     * Long enough that a section set and its indices stay put while the user
+     * navigates, short enough that new recommendations still arrive.
+     */
+    const val HOME_CACHE_TTL_MS = 5 * 60 * 1000L
   }
 }
