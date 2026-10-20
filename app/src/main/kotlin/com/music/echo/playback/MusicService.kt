@@ -3624,6 +3624,7 @@ class MusicService : MediaLibraryService(), Player.Listener, PlaybackStatsListen
       var shouldBypassCache = bypassCacheForQualityChange.contains(mediaId)
 
       val dbFormat = runBlocking(Dispatchers.IO) { database.format(mediaId).firstOrNull() }
+      val dbSong = runBlocking(Dispatchers.IO) { database.song(mediaId).firstOrNull() }
 
       val cachedLength =
         androidx.media3.datasource.cache.ContentMetadata.getContentLength(
@@ -3632,7 +3633,9 @@ class MusicService : MediaLibraryService(), Player.Listener, PlaybackStatsListen
           .takeIf { it != androidx.media3.common.C.LENGTH_UNSET.toLong() }
           ?: dbFormat?.contentLength
           ?: -1L
-      val isFullyDownloaded = cachedLength > 0 && downloadCache.isCached(mediaId, 0, cachedLength)
+      val isFullyDownloaded =
+        (cachedLength > 0 && downloadCache.isCached(mediaId, 0, cachedLength)) ||
+          (dbSong?.song?.isDownloaded == true && downloadCache.getCachedSpans(mediaId).isNotEmpty())
 
       val activeQualityInCache =
         songUrlCache.keys
