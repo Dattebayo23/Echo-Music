@@ -39,6 +39,7 @@ import echo.music.iad1tya.ui.screens.playlist.BottomPlaylistScreen
 import echo.music.iad1tya.ui.screens.playlist.CachePlaylistScreen
 import echo.music.iad1tya.ui.screens.playlist.LocalPlaylistScreen
 import echo.music.iad1tya.ui.screens.playlist.OnlinePlaylistScreen
+import echo.music.iad1tya.ui.screens.playlist.SpotifyPlaylistDetailScreen
 import echo.music.iad1tya.ui.screens.playlist.TopPlaylistScreen
 import echo.music.iad1tya.ui.screens.recognition.RecognitionHistoryScreen
 import echo.music.iad1tya.ui.screens.recognition.RecognitionScreen
@@ -217,6 +218,33 @@ fun NavGraphBuilder.navigationBuilder(
       ),
   ) {
     OnlinePlaylistScreen(navController, scrollBehavior)
+  }
+
+  composable(
+    route = "spotify_playlist/{playlistId}?title={title}&cover={cover}",
+    arguments =
+      listOf(
+        navArgument("playlistId") { type = NavType.StringType },
+        navArgument("title") {
+          type = NavType.StringType
+          defaultValue = "Playlist"
+        },
+        navArgument("cover") {
+          type = NavType.StringType
+          defaultValue = ""
+        },
+      ),
+  ) { backStackEntry ->
+    val playlistId = backStackEntry.arguments?.getString("playlistId") ?: return@composable
+    val title = backStackEntry.arguments?.getString("title") ?: "Playlist"
+    val cover = backStackEntry.arguments?.getString("cover") ?: ""
+    SpotifyPlaylistDetailScreen(
+      navController = navController,
+      scrollBehavior = scrollBehavior,
+      playlistId = playlistId,
+      playlistTitle = title,
+      playlistCover = cover,
+    )
   }
 
   composable(
