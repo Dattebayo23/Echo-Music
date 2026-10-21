@@ -21,6 +21,9 @@ import timber.log.Timber
  * last merged snapshot (and merging every fetch into it) keeps the full set of
  * categories, in the same order, from one connection to the next.
  *
+ * The snapshot is tagged with the account it was built for and is ignored for
+ * any other account, so one account's personalized shelves never reach another.
+ *
  * Only the fields the Auto tree uses are stored (songs and playlists), so the
  * innertube models do not need to be serializable.
  */
@@ -30,12 +33,14 @@ class AutoHomeSnapshotStore(context: Context) {
 
   private val file = File(context.filesDir, FILE_NAME)
 
-  fun load(): Snapshot? =
+  /** The stored snapshot, or null when there is none or it belongs to another account. */
+  fun load(account: String): Snapshot? =
     try {
       if (!file.exists()) {
         null
       } else {
         val root = JSONObject(file.readText())
+        if (root.optString("account") != account) return null
         val sections = mutableListOf<HomePage.Section>()
         val lastSeen = mutableMapOf<String, Long>()
         val array = root.getJSONArray("sections")
@@ -59,7 +64,12 @@ class AutoHomeSnapshotStore(context: Context) {
       null
     }
 
-  fun save(sections: List<HomePage.Section>, keyOf: (HomePage.Section) -> String, lastSeenMs: Map<String, Long>) {
+  fun save(
+    account: String,
+    sections: List<HomePage.Section>,
+    keyOf: (HomePage.Section) -> String,
+    lastSeenMs: Map<String, Long>,
+  ) {
     try {
       val array = JSONArray()
       sections.forEach { section ->
@@ -75,7 +85,7 @@ class AutoHomeSnapshotStore(context: Context) {
         )
       }
       val tmp = File(file.parentFile, "$FILE_NAME.tmp")
-      tmp.writeText(JSONObject().put("sections", array).toString())
+      tmp.writeText(JSONObject().put("account", account).put("sections", array).toString())
       if (!tmp.renameTo(file)) tmp.delete()
     } catch (e: Exception) {
       Timber.tag(TAG).w(e, "Could not save Auto Home snapshot")

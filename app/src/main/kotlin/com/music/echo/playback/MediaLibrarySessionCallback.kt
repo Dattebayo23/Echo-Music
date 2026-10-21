@@ -4,6 +4,7 @@ import android.content.ContentResolver
 import android.content.Context
 import android.content.pm.PackageManager
 import android.net.Uri
+import java.security.MessageDigest
 import android.os.Bundle
 import android.os.SystemClock
 import androidx.annotation.DrawableRes
@@ -37,6 +38,7 @@ import com.music.innertube.pages.HomePage
 import dagger.hilt.android.qualifiers.ApplicationContext
 import echo.music.iad1tya.R
 import echo.music.iad1tya.constants.AutoplayOnAutomotiveConnectKey
+import echo.music.iad1tya.constants.DataSyncIdKey
 import echo.music.iad1tya.constants.HideExplicitKey
 import echo.music.iad1tya.constants.HideVideoSongsKey
 import echo.music.iad1tya.constants.MediaSessionConstants
@@ -93,7 +95,8 @@ constructor(
 
   /** Disk copy of [cachedHome], so the shelves survive process restarts. */
   private val homeStore by lazy { AutoHomeSnapshotStore(context) }
-  private var homeRestored = false
+  /** Account the cached snapshot belongs to (see [homeAccountKey]); null until first use. */
+  private var homeAccount: String? = null
   /** True while [cachedHome] is the restored copy and still needs a fresh fetch. */
   private var cachedHomeFromDisk = false
   /** Wall-clock time each shelf was last returned by YouTube, by [homeSectionKey]. */
@@ -1004,9 +1007,10 @@ constructor(
    * [SystemClock.elapsedRealtime] so a wall-clock adjustment cannot expire it.
    */
   private suspend fun youtubeHome(): HomePage? {
+    val account = homeAccountKey()
     val (home, isFresh) =
       homeMutex.withLock {
-        restoreHomeIfNeeded()
+        useHomeAccount(account)
         cachedHome to isCachedHomeFresh()
       }
     if (isFresh) return home
@@ -1020,14 +1024,41 @@ constructor(
     return refreshHome()
   }
 
-  private fun restoreHomeIfNeeded() {
-    if (homeRestored) return
-    homeRestored = true
-    homeStore.load()?.takeIf { it.sections.isNotEmpty() }?.let { snapshot ->
-      cachedHome = HomePage(chips = null, sections = snapshot.sections)
-      homeLastSeenMs = snapshot.lastSeenMs
-      cachedHomeFromDisk = true
-    }
+  /**
+   * Identifies the signed-in account, so one account's personalized shelves are
+   * never shown to another. Read from DataStore rather than [YouTube.dataSyncId],
+   * which is still unset for a moment after a cold start.
+   */
+  private fun homeAccountKey(): String =
+    MessageDigest.getInstance("SHA-256")
+      .digest(context.dataStore.get(DataSyncIdKey, "").toByteArray())
+      .joinToString("") { "%02x".format(it) }
+
+  /**
+   * Makes [cachedHome] belong to [account]: on first use, or after a sign-out or
+   * account switch inside this process, the snapshot is replaced by the one
+   * stored for [account] (if any). Callers hold [homeMutex].
+   */
+  private fun useHomeAccount(account: String) {
+    if (homeAccount == account) return
+    homeAccount = account
+    cachedHome = null
+    cachedHomeAtMs = 0L
+    cachedHomeFromDisk = false
+    homeLastSeenMs = emptyMap()
+    val snapshot = homeStore.load(account) ?: return
+    // The age limit applies to the restored copy too, or a shelf could outlive
+    // it whenever the refresh keeps failing.
+    val wallNow = System.currentTimeMillis()
+    val sections =
+      snapshot.sections.filter {
+        wallNow - (snapshot.lastSeenMs[homeSectionKey(it)] ?: 0L) < HOME_SECTION_MAX_AGE_MS
+      }
+    if (sections.isEmpty()) return
+    val keptKeys = sections.map(::homeSectionKey).toSet()
+    cachedHome = HomePage(chips = null, sections = sections)
+    homeLastSeenMs = snapshot.lastSeenMs.filterKeys { it in keptKeys }
+    cachedHomeFromDisk = true
   }
 
   private fun isCachedHomeFresh(): Boolean =
@@ -1046,36 +1077,49 @@ constructor(
     }
   }
 
-  /** Fetches Home, merges it into the snapshot and persists the result. */
-  private suspend fun refreshHome(): HomePage? = homeMutex.withLock {
-    restoreHomeIfNeeded()
-    // Another caller may have refreshed while this one waited for the lock.
-    if (isCachedHomeFresh()) return@withLock cachedHome
-    val fetched = fetchFullHome()
-    if (fetched == null || fetched.sections.isEmpty()) {
-      // Offline or YouTube failing: the restored snapshot still gives Auto its shelves.
-      return@withLock cachedHome
+  /**
+   * Fetches Home, merges it into the snapshot and persists the result.
+   *
+   * [homeMutex] is held only to check freshness and to install the result, not
+   * during the network fetch, so browse calls keep getting the stale snapshot
+   * immediately while a refresh is running.
+   */
+  private suspend fun refreshHome(): HomePage? {
+    val account = homeAccountKey()
+    homeMutex.withLock {
+      useHomeAccount(account)
+      if (isCachedHomeFresh()) return cachedHome
     }
-    val wallNow = System.currentTimeMillis()
-    val lastSeen = homeLastSeenMs.toMutableMap()
-    fetched.sections.forEach { lastSeen[homeSectionKey(it)] = wallNow }
-    // Keep shelves YouTube has not returned for a while from piling up forever.
-    val merged =
-      mergeHomeSnapshots(cachedHome, fetched).let { page ->
-        page.copy(
-          sections =
-            page.sections.filter {
-              wallNow - (lastSeen[homeSectionKey(it)] ?: wallNow) < HOME_SECTION_MAX_AGE_MS
-            }
-        )
+    val fetched = fetchFullHome()
+    return homeMutex.withLock {
+      useHomeAccount(account)
+      if (fetched == null || fetched.sections.isEmpty()) {
+        // Offline or YouTube failing: the restored snapshot still gives Auto its shelves.
+        return@withLock cachedHome
       }
-    val keptKeys = merged.sections.map(::homeSectionKey).toSet()
-    homeLastSeenMs = lastSeen.filterKeys { it in keptKeys }
-    cachedHome = merged
-    cachedHomeAtMs = SystemClock.elapsedRealtime()
-    cachedHomeFromDisk = false
-    homeStore.save(merged.sections, ::homeSectionKey, homeLastSeenMs)
-    merged
+      // Another caller may have installed a fresh snapshot during the fetch.
+      if (isCachedHomeFresh()) return@withLock cachedHome
+      val wallNow = System.currentTimeMillis()
+      val lastSeen = homeLastSeenMs.toMutableMap()
+      fetched.sections.forEach { lastSeen[homeSectionKey(it)] = wallNow }
+      // Keep shelves YouTube has not returned for a while from piling up forever.
+      val merged =
+        mergeHomeSnapshots(cachedHome, fetched).let { page ->
+          page.copy(
+            sections =
+              page.sections.filter {
+                wallNow - (lastSeen[homeSectionKey(it)] ?: wallNow) < HOME_SECTION_MAX_AGE_MS
+              }
+          )
+        }
+      val keptKeys = merged.sections.map(::homeSectionKey).toSet()
+      homeLastSeenMs = lastSeen.filterKeys { it in keptKeys }
+      cachedHome = merged
+      cachedHomeAtMs = SystemClock.elapsedRealtime()
+      cachedHomeFromDisk = false
+      homeStore.save(account, merged.sections, ::homeSectionKey, homeLastSeenMs)
+      merged
+    }
   }
 
   /**
@@ -1087,9 +1131,11 @@ constructor(
    * the first page made shelves swap in and out between visits.
    */
   private suspend fun fetchFullHome(): HomePage? {
+    // Bounded, or a stalled connection would keep the refresh (and the
+    // homeRefreshing flag) active forever.
     val first =
       try {
-        YouTube.home().getOrNull()
+        withTimeoutOrNull(HOME_FIRST_PAGE_TIMEOUT_MS) { YouTube.home().getOrNull() }
       } catch (e: Exception) {
         reportException(e)
         null
@@ -1611,6 +1657,7 @@ constructor(
      */
     const val HOME_CACHE_TTL_MS = 5 * 60 * 1000L
     const val HOME_MAX_PAGES = 6
+    const val HOME_FIRST_PAGE_TIMEOUT_MS = 10_000L
     /** A shelf YouTube has not returned for this long is dropped from the snapshot. */
     const val HOME_SECTION_MAX_AGE_MS = 14L * 24 * 60 * 60 * 1000
     const val HOME_CONTINUATION_TIMEOUT_MS = 12_000L
