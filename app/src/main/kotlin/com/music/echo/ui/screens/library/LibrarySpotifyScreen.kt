@@ -17,7 +17,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Button
@@ -39,6 +39,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.res.painterResource
+import androidx.compose.ui.res.pluralStringResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
@@ -51,8 +52,13 @@ import androidx.navigation.NavController
 import coil3.compose.AsyncImage
 import echo.music.iad1tya.LocalPlayerAwareWindowInsets
 import echo.music.iad1tya.R
+import echo.music.iad1tya.constants.ListThumbnailSize
+import echo.music.iad1tya.constants.ThumbnailCornerRadius
 import echo.music.iad1tya.spotify.SpotifyMapper
-import echo.music.iad1tya.spotify.models.SpotifyPlaylist
+import echo.music.iad1tya.ui.component.AutoPlaylistButton
+import echo.music.iad1tya.ui.component.ListItem
+import echo.music.iad1tya.utils.joinByBullet
+import echo.music.iad1tya.utils.listItemShape
 
 private const val SPOTIFY_LIKED_SONGS_COVER = "https://misc.scdn.co/liked-songs/liked-songs-640.png"
 
@@ -117,19 +123,26 @@ fun LibrarySpotifyScreen(
           SpotifyProfileHeader(
             accountName = uiState.accountName ?: "Spotify User",
             avatarUrl = uiState.avatarUrl,
-            onRefresh = { viewModel.refresh() }
+            onRefresh = { viewModel.refresh() },
+            modifier = Modifier.padding(horizontal = 16.dp, vertical = 6.dp),
           )
         }
 
-        // Hero Card: Liked Songs
+        // Hero Card: Liked Songs (using native AutoPlaylistButton pattern)
         item(key = "liked_songs") {
-          SpotifyHeroLikedCard(
-            trackCount = uiState.likedSongsCount,
+          val countSuffix = if (uiState.likedSongsCount != null) " (${uiState.likedSongsCount})" else ""
+          AutoPlaylistButton(
+            title = stringResource(R.string.spotify_liked_songs) + countSuffix,
+            icon = R.drawable.favorite,
+            iconTint = Color(0xFF1DB954),
             onClick = {
               val titleEnc = Uri.encode("Liked Songs")
               val coverEnc = Uri.encode(SPOTIFY_LIKED_SONGS_COVER)
               navController.navigate("spotify_playlist/liked?title=$titleEnc&cover=$coverEnc")
-            }
+            },
+            modifier = Modifier
+              .fillMaxWidth()
+              .padding(horizontal = 16.dp, vertical = 6.dp)
           )
         }
 
@@ -138,20 +151,20 @@ fun LibrarySpotifyScreen(
           Row(
             modifier = Modifier
               .fillMaxWidth()
-              .padding(horizontal = 20.dp, vertical = 12.dp),
+              .padding(start = 20.dp, end = 20.dp, top = 16.dp, bottom = 8.dp),
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.SpaceBetween,
           ) {
             Text(
               text = stringResource(R.string.spotify_playlists_title),
-              style = MaterialTheme.typography.titleMedium,
+              style = MaterialTheme.typography.titleLarge,
               fontWeight = FontWeight.Bold,
-              color = MaterialTheme.colorScheme.onBackground,
+              color = MaterialTheme.colorScheme.onSurface,
             )
             Text(
-              text = "${uiState.playlists.size} playlists",
-              style = MaterialTheme.typography.bodySmall,
-              color = MaterialTheme.colorScheme.onSurfaceVariant,
+              text = pluralStringResource(R.plurals.n_playlist, uiState.playlists.size, uiState.playlists.size),
+              style = MaterialTheme.typography.titleSmall,
+              color = MaterialTheme.colorScheme.secondary,
             )
           }
         }
@@ -172,19 +185,55 @@ fun LibrarySpotifyScreen(
             }
           }
         } else {
-          items(
+          itemsIndexed(
             items = uiState.playlists,
-            key = { it.id }
-          ) { playlist ->
+            key = { _, pl -> pl.id }
+          ) { index, playlist ->
             val coverUrl = SpotifyMapper.getPlaylistThumbnail(playlist)
-            SpotifyPlaylistRow(
-              playlist = playlist,
-              coverUrl = coverUrl,
-              onClick = {
-                val titleEnc = Uri.encode(playlist.name)
-                val coverEnc = Uri.encode(coverUrl.orEmpty())
-                navController.navigate("spotify_playlist/${playlist.id}?title=$titleEnc&cover=$coverEnc")
-              }
+            val owner = playlist.owner?.displayName?.takeIf { it.isNotBlank() }
+            val countText = playlist.tracks?.total?.let { "$it songs" }
+
+            ListItem(
+              title = playlist.name,
+              subtitle = {
+                val sub = joinByBullet(owner, countText)
+                if (sub.isNotBlank()) {
+                  Text(
+                    text = sub,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                  )
+                }
+              },
+              thumbnailContent = {
+                AsyncImage(
+                  model = coverUrl,
+                  contentDescription = null,
+                  contentScale = ContentScale.Crop,
+                  modifier = Modifier
+                    .size(ListThumbnailSize)
+                    .clip(RoundedCornerShape(ThumbnailCornerRadius))
+                    .background(MaterialTheme.colorScheme.surfaceContainerHighest),
+                )
+              },
+              trailingContent = {
+                Icon(
+                  painter = painterResource(R.drawable.more_vert),
+                  contentDescription = null,
+                  tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f),
+                  modifier = Modifier.padding(end = 4.dp),
+                )
+              },
+              shape = listItemShape(index, uiState.playlists.size),
+              modifier = Modifier
+                .fillMaxWidth()
+                .clickable {
+                  val titleEnc = Uri.encode(playlist.name)
+                  val coverEnc = Uri.encode(coverUrl.orEmpty())
+                  navController.navigate("spotify_playlist/${playlist.id}?title=$titleEnc&cover=$coverEnc")
+                },
             )
           }
         }
@@ -249,8 +298,8 @@ private fun SpotifyConnectBanner(
         onClick = onConnect,
         shape = RoundedCornerShape(16.dp),
         colors = ButtonDefaults.buttonColors(
-          containerColor = MaterialTheme.colorScheme.onSurface,
-          contentColor = MaterialTheme.colorScheme.surface,
+          containerColor = MaterialTheme.colorScheme.primary,
+          contentColor = MaterialTheme.colorScheme.onPrimary,
         ),
         modifier = Modifier.fillMaxWidth(0.85f),
       ) {
@@ -288,193 +337,84 @@ private fun SpotifyProfileHeader(
   onRefresh: () -> Unit,
   modifier: Modifier = Modifier,
 ) {
-  Row(
-    modifier = modifier
-      .fillMaxWidth()
-      .padding(horizontal = 20.dp, vertical = 8.dp),
-    verticalAlignment = Alignment.CenterVertically,
-    horizontalArrangement = Arrangement.SpaceBetween,
-  ) {
-    Row(verticalAlignment = Alignment.CenterVertically) {
-      if (!avatarUrl.isNullOrBlank()) {
-        AsyncImage(
-          model = avatarUrl,
-          contentDescription = null,
-          contentScale = ContentScale.Crop,
-          modifier = Modifier
-            .size(40.dp)
-            .clip(CircleShape),
-        )
-      } else {
-        Box(
-          modifier = Modifier
-            .size(40.dp)
-            .clip(CircleShape)
-            .background(MaterialTheme.colorScheme.surfaceContainerHighest),
-          contentAlignment = Alignment.Center,
-        ) {
-          Icon(
-            painter = painterResource(R.drawable.person),
-            contentDescription = null,
-            tint = MaterialTheme.colorScheme.onSurfaceVariant,
-            modifier = Modifier.size(22.dp),
-          )
-        }
-      }
-
-      Spacer(modifier = Modifier.width(12.dp))
-
-      Column {
-        Text(
-          text = accountName,
-          style = MaterialTheme.typography.titleMedium,
-          fontWeight = FontWeight.SemiBold,
-          color = MaterialTheme.colorScheme.onBackground,
-          maxLines = 1,
-          overflow = TextOverflow.Ellipsis,
-        )
-        Row(verticalAlignment = Alignment.CenterVertically) {
-          Box(
-            modifier = Modifier
-              .size(6.dp)
-              .clip(CircleShape)
-              .background(Color(0xFF1DB954))
-          )
-          Spacer(modifier = Modifier.width(6.dp))
-          Text(
-            text = "Spotify Connected",
-            style = MaterialTheme.typography.bodySmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-          )
-        }
-      }
-    }
-
-    IconButton(onClick = onRefresh) {
-      Icon(
-        painter = painterResource(R.drawable.cached),
-        contentDescription = "Refresh",
-        tint = MaterialTheme.colorScheme.onSurfaceVariant,
-      )
-    }
-  }
-}
-
-@Composable
-private fun SpotifyHeroLikedCard(
-  trackCount: Int?,
-  onClick: () -> Unit,
-  modifier: Modifier = Modifier,
-) {
   Surface(
-    modifier = modifier
-      .fillMaxWidth()
-      .padding(horizontal = 16.dp, vertical = 8.dp)
-      .clickable(onClick = onClick),
-    shape = RoundedCornerShape(20.dp),
-    color = MaterialTheme.colorScheme.surfaceContainerHigh,
+    shape = RoundedCornerShape(16.dp),
+    color = MaterialTheme.colorScheme.surfaceContainer,
+    modifier = modifier.fillMaxWidth(),
   ) {
     Row(
       modifier = Modifier
         .fillMaxWidth()
-        .padding(16.dp),
+        .padding(horizontal = 16.dp, vertical = 12.dp),
       verticalAlignment = Alignment.CenterVertically,
-      horizontalArrangement = Arrangement.spacedBy(16.dp),
+      horizontalArrangement = Arrangement.SpaceBetween,
     ) {
-      AsyncImage(
-        model = SPOTIFY_LIKED_SONGS_COVER,
-        contentDescription = null,
-        contentScale = ContentScale.Crop,
-        modifier = Modifier
-          .size(64.dp)
-          .clip(RoundedCornerShape(12.dp)),
-      )
-
-      Column(modifier = Modifier.weight(1f)) {
-        Text(
-          text = stringResource(R.string.spotify_liked_songs),
-          style = MaterialTheme.typography.titleMedium,
-          fontWeight = FontWeight.Bold,
-          color = MaterialTheme.colorScheme.onSurface,
-        )
-        Spacer(modifier = Modifier.height(4.dp))
-        Text(
-          text = if (trackCount != null) "$trackCount tracks" else stringResource(R.string.spotify_liked_songs_desc),
-          style = MaterialTheme.typography.bodyMedium,
-          color = MaterialTheme.colorScheme.onSurfaceVariant,
-        )
-      }
-
-      Icon(
-        painter = painterResource(R.drawable.navigate_next),
-        contentDescription = null,
-        tint = MaterialTheme.colorScheme.onSurfaceVariant,
-      )
-    }
-  }
-}
-
-@Composable
-private fun SpotifyPlaylistRow(
-  playlist: SpotifyPlaylist,
-  coverUrl: String?,
-  onClick: () -> Unit,
-  modifier: Modifier = Modifier,
-) {
-  Row(
-    modifier = modifier
-      .fillMaxWidth()
-      .clickable(onClick = onClick)
-      .padding(horizontal = 20.dp, vertical = 10.dp),
-    verticalAlignment = Alignment.CenterVertically,
-    horizontalArrangement = Arrangement.spacedBy(16.dp),
-  ) {
-    AsyncImage(
-      model = coverUrl,
-      contentDescription = null,
-      contentScale = ContentScale.Crop,
-      modifier = Modifier
-        .size(54.dp)
-        .clip(RoundedCornerShape(12.dp))
-        .background(MaterialTheme.colorScheme.surfaceContainerHighest),
-    )
-
-    Column(modifier = Modifier.weight(1f)) {
-      Text(
-        text = playlist.name,
-        style = MaterialTheme.typography.bodyLarge,
-        fontWeight = FontWeight.Medium,
-        color = MaterialTheme.colorScheme.onBackground,
-        maxLines = 1,
-        overflow = TextOverflow.Ellipsis,
-      )
-
-      val subtitle = buildString {
-        playlist.owner?.displayName?.takeIf { it.isNotBlank() }?.let {
-          append(it)
+      Row(
+        verticalAlignment = Alignment.CenterVertically,
+        modifier = Modifier.weight(1f),
+      ) {
+        if (!avatarUrl.isNullOrBlank()) {
+          AsyncImage(
+            model = avatarUrl,
+            contentDescription = null,
+            contentScale = ContentScale.Crop,
+            modifier = Modifier
+              .size(44.dp)
+              .clip(CircleShape),
+          )
+        } else {
+          Box(
+            modifier = Modifier
+              .size(44.dp)
+              .clip(CircleShape)
+              .background(MaterialTheme.colorScheme.surfaceContainerHighest),
+            contentAlignment = Alignment.Center,
+          ) {
+            Icon(
+              painter = painterResource(R.drawable.person),
+              contentDescription = null,
+              tint = MaterialTheme.colorScheme.onSurfaceVariant,
+              modifier = Modifier.size(24.dp),
+            )
+          }
         }
-        playlist.tracks?.total?.let { count ->
-          if (isNotEmpty()) append(" • ")
-          append("$count tracks")
+
+        Spacer(modifier = Modifier.width(14.dp))
+
+        Column {
+          Text(
+            text = accountName,
+            style = MaterialTheme.typography.titleMedium,
+            fontWeight = FontWeight.Bold,
+            color = MaterialTheme.colorScheme.onSurface,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+          )
+          Spacer(modifier = Modifier.height(2.dp))
+          Row(verticalAlignment = Alignment.CenterVertically) {
+            Box(
+              modifier = Modifier
+                .size(7.dp)
+                .clip(CircleShape)
+                .background(Color(0xFF1DB954))
+            )
+            Spacer(modifier = Modifier.width(6.dp))
+            Text(
+              text = "Spotify Connected",
+              style = MaterialTheme.typography.bodySmall,
+              color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+          }
         }
       }
 
-      if (subtitle.isNotBlank()) {
-        Spacer(modifier = Modifier.height(2.dp))
-        Text(
-          text = subtitle,
-          style = MaterialTheme.typography.bodyMedium,
-          color = MaterialTheme.colorScheme.onSurfaceVariant,
-          maxLines = 1,
-          overflow = TextOverflow.Ellipsis,
+      IconButton(onClick = onRefresh) {
+        Icon(
+          painter = painterResource(R.drawable.cached),
+          contentDescription = "Refresh",
+          tint = MaterialTheme.colorScheme.onSurfaceVariant,
         )
       }
     }
-
-    Icon(
-      painter = painterResource(R.drawable.navigate_next),
-      contentDescription = null,
-      tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f),
-    )
   }
 }

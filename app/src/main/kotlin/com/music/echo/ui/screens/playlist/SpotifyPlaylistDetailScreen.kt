@@ -1,5 +1,6 @@
 package echo.music.iad1tya.ui.screens.playlist
 
+import android.content.Intent
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -8,15 +9,20 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.asPaddingValues
+import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.systemBars
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Button
@@ -36,6 +42,7 @@ import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.material3.TopAppBarScrollBehavior
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -44,23 +51,36 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalConfiguration
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.res.painterResource
+import androidx.compose.ui.res.pluralStringResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import androidx.hilt.lifecycle.viewmodel.compose.hiltViewModel
 import androidx.navigation.NavController
 import coil3.compose.AsyncImage
+import coil3.request.ImageRequest
 import com.music.innertube.models.WatchEndpoint
 import echo.music.iad1tya.LocalPlayerAwareWindowInsets
 import echo.music.iad1tya.LocalPlayerConnection
 import echo.music.iad1tya.R
-import echo.music.iad1tya.extensions.toMediaItem
+import echo.music.iad1tya.constants.AppBarHeight
+import echo.music.iad1tya.constants.ListThumbnailSize
+import echo.music.iad1tya.constants.ThumbnailCornerRadius
 import echo.music.iad1tya.models.toMediaMetadata
 import echo.music.iad1tya.playback.queues.YouTubeQueue
 import echo.music.iad1tya.spotify.SpotifyMapper
 import echo.music.iad1tya.spotify.models.SpotifyTrack
+import echo.music.iad1tya.ui.component.ListItem
+import echo.music.iad1tya.ui.component.OnlineBlur
+import echo.music.iad1tya.utils.joinByBullet
+import echo.music.iad1tya.utils.listItemShape
 import echo.music.iad1tya.utils.makeTimeString
 import kotlinx.coroutines.launch
 
@@ -83,16 +103,33 @@ fun SpotifyPlaylistDetailScreen(
 
   val coroutineScope = rememberCoroutineScope()
   val snackbarHostState = remember { SnackbarHostState() }
+  val lazyListState = rememberLazyListState()
+  val context = LocalContext.current
+
+  val effectiveTitle = uiState.title.ifBlank { playlistTitle }
+  val effectiveCover = uiState.coverUrl ?: playlistCover
+
+  val isPlaylistPlaying = isPlaying && uiState.tracks.any {
+    it.name.equals(mediaMetadata?.title, ignoreCase = true)
+  }
+
+  val transparentAppBar by remember {
+    derivedStateOf {
+      lazyListState.firstVisibleItemIndex == 0 && lazyListState.firstVisibleItemScrollOffset < 150
+    }
+  }
 
   Scaffold(
     topBar = {
       TopAppBar(
         title = {
-          Text(
-            text = uiState.title.ifBlank { playlistTitle },
-            maxLines = 1,
-            overflow = TextOverflow.Ellipsis,
-          )
+          if (!transparentAppBar) {
+            Text(
+              text = effectiveTitle,
+              maxLines = 1,
+              overflow = TextOverflow.Ellipsis,
+            )
+          }
         },
         navigationIcon = {
           IconButton(onClick = { navController.navigateUp() }) {
@@ -110,9 +147,11 @@ fun SpotifyPlaylistDetailScreen(
             )
           }
         },
-        colors = TopAppBarDefaults.topAppBarColors(
-          containerColor = Color.Transparent,
-        ),
+        colors = if (transparentAppBar) {
+          TopAppBarDefaults.topAppBarColors(containerColor = Color.Transparent)
+        } else {
+          TopAppBarDefaults.topAppBarColors()
+        },
         scrollBehavior = scrollBehavior,
       )
     },
@@ -136,15 +175,18 @@ fun SpotifyPlaylistDetailScreen(
         }
       } else {
         LazyColumn(
+          state = lazyListState,
           modifier = Modifier.fillMaxSize(),
           contentPadding = PaddingValues(bottom = 80.dp),
         ) {
-          // Playlist Header Hero Card
+          // Playlist Header Hero Section
           item(key = "header") {
-            SpotifyPlaylistHeaderCard(
-              title = uiState.title.ifBlank { playlistTitle },
-              coverUrl = uiState.coverUrl ?: playlistCover,
-              trackCount = if (uiState.totalCount > 0) uiState.totalCount else uiState.tracks.size,
+            SpotifyPlaylistHeader(
+              title = effectiveTitle,
+              coverUrl = effectiveCover,
+              tracks = uiState.tracks,
+              totalCount = if (uiState.totalCount > 0) uiState.totalCount else uiState.tracks.size,
+              isPlaylistPlaying = isPlaylistPlaying,
               onPlayAll = {
                 uiState.tracks.firstOrNull()?.let { firstTrack ->
                   viewModel.playTrack(
@@ -185,46 +227,142 @@ fun SpotifyPlaylistDetailScreen(
                     }
                   )
                 }
+              },
+              onShare = {
+                val shareUrl = if (playlistId == "liked") {
+                  "https://open.spotify.com/collection/tracks"
+                } else {
+                  "https://open.spotify.com/playlist/$playlistId"
+                }
+                val intent = Intent().apply {
+                  action = Intent.ACTION_SEND
+                  type = "text/plain"
+                  putExtra(Intent.EXTRA_TEXT, "$effectiveTitle: $shareUrl")
+                }
+                context.startActivity(Intent.createChooser(intent, null))
               }
             )
           }
 
-          // Track Rows
+          // Track List Items (styled as grouped Nothing OS cards)
           itemsIndexed(
             items = uiState.tracks,
             key = { index, track -> "${track.id}_$index" }
           ) { index, track ->
             val isCurrentSong = mediaMetadata?.title.equals(track.name, ignoreCase = true)
             val isResolving = uiState.resolvingTrackId == track.id
+            val coverUrl = SpotifyMapper.getTrackThumbnail(track)
+            val durationText = if (track.durationMs > 0) makeTimeString(track.durationMs.toLong()) else null
 
-            SpotifyTrackRow(
-              index = index + 1,
-              track = track,
-              isActive = isCurrentSong,
-              isPlaying = isCurrentSong && isPlaying,
-              isResolving = isResolving,
-              onClick = {
-                if (isCurrentSong) {
-                  playerConnection?.togglePlayPause()
-                } else {
-                  viewModel.playTrack(
-                    track = track,
-                    onSuccess = { songItem ->
-                      playerConnection?.playQueue(
-                        YouTubeQueue(
-                          endpoint = WatchEndpoint(videoId = songItem.id),
-                          preloadItem = songItem.toMediaMetadata(),
-                        )
-                      )
-                    },
-                    onError = {
-                      coroutineScope.launch {
-                        snackbarHostState.showSnackbar("Could not match \"${track.name}\" to a playable stream")
-                      }
-                    }
+            ListItem(
+              title = track.name,
+              subtitle = {
+                val artistsText = track.artists.joinToString(", ") { it.name }
+                val sub = joinByBullet(artistsText, durationText)
+                if (sub.isNotBlank()) {
+                  Text(
+                    text = sub,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
                   )
                 }
-              }
+              },
+              thumbnailContent = {
+                Box(
+                  modifier = Modifier.size(ListThumbnailSize),
+                  contentAlignment = Alignment.Center,
+                ) {
+                  AsyncImage(
+                    model = coverUrl,
+                    contentDescription = null,
+                    contentScale = ContentScale.Crop,
+                    modifier = Modifier
+                      .fillMaxSize()
+                      .clip(RoundedCornerShape(ThumbnailCornerRadius))
+                      .background(MaterialTheme.colorScheme.surfaceContainerHighest),
+                  )
+
+                  if (isResolving) {
+                    Box(
+                      modifier = Modifier
+                        .fillMaxSize()
+                        .clip(RoundedCornerShape(ThumbnailCornerRadius))
+                        .background(Color.Black.copy(alpha = 0.5f)),
+                      contentAlignment = Alignment.Center,
+                    ) {
+                      CircularProgressIndicator(
+                        modifier = Modifier.size(20.dp),
+                        strokeWidth = 2.dp,
+                        color = Color.White,
+                      )
+                    }
+                  } else if (isCurrentSong) {
+                    Box(
+                      modifier = Modifier
+                        .fillMaxSize()
+                        .clip(RoundedCornerShape(ThumbnailCornerRadius))
+                        .background(Color.Black.copy(alpha = 0.5f)),
+                      contentAlignment = Alignment.Center,
+                    ) {
+                      Icon(
+                        painter = painterResource(
+                          if (isPlaying) R.drawable.volume_up else R.drawable.pause
+                        ),
+                        contentDescription = null,
+                        tint = Color.White,
+                        modifier = Modifier.size(20.dp),
+                      )
+                    }
+                  }
+                }
+              },
+              trailingContent = {
+                IconButton(
+                  onClick = {
+                    val trackUrl = "https://open.spotify.com/track/${track.id}"
+                    val intent = Intent().apply {
+                      action = Intent.ACTION_SEND
+                      type = "text/plain"
+                      putExtra(Intent.EXTRA_TEXT, "${track.name}: $trackUrl")
+                    }
+                    context.startActivity(Intent.createChooser(intent, null))
+                  }
+                ) {
+                  Icon(
+                    painter = painterResource(R.drawable.more_vert),
+                    contentDescription = "More",
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f),
+                  )
+                }
+              },
+              shape = listItemShape(index, uiState.tracks.size),
+              isActive = isCurrentSong,
+              modifier = Modifier
+                .fillMaxWidth()
+                .clickable {
+                  if (isCurrentSong) {
+                    playerConnection?.togglePlayPause()
+                  } else {
+                    viewModel.playTrack(
+                      track = track,
+                      onSuccess = { songItem ->
+                        playerConnection?.playQueue(
+                          YouTubeQueue(
+                            endpoint = WatchEndpoint(videoId = songItem.id),
+                            preloadItem = songItem.toMediaMetadata(),
+                          )
+                        )
+                      },
+                      onError = {
+                        coroutineScope.launch {
+                          snackbarHostState.showSnackbar("Could not match \"${track.name}\" to a playable stream")
+                        }
+                      }
+                    )
+                  }
+                },
             )
           }
         }
@@ -234,193 +372,206 @@ fun SpotifyPlaylistDetailScreen(
 }
 
 @Composable
-private fun SpotifyPlaylistHeaderCard(
+private fun SpotifyPlaylistHeader(
   title: String,
   coverUrl: String?,
-  trackCount: Int,
+  tracks: List<SpotifyTrack>,
+  totalCount: Int,
+  isPlaylistPlaying: Boolean,
   onPlayAll: () -> Unit,
   onShuffle: () -> Unit,
+  onShare: () -> Unit,
   modifier: Modifier = Modifier,
 ) {
-  Column(
-    modifier = modifier
-      .fillMaxWidth()
-      .padding(16.dp),
-    horizontalAlignment = Alignment.CenterHorizontally,
-  ) {
-    Surface(
-      shape = RoundedCornerShape(20.dp),
-      shadowElevation = 8.dp,
-      color = MaterialTheme.colorScheme.surfaceContainerHighest,
-      modifier = Modifier.size(170.dp),
-    ) {
-      AsyncImage(
-        model = coverUrl,
-        contentDescription = title,
-        contentScale = ContentScale.Crop,
-        modifier = Modifier.fillMaxSize(),
-      )
-    }
+  val density = LocalDensity.current
+  val systemBarsTopPadding = WindowInsets.systemBars.asPaddingValues().calculateTopPadding()
+  val headerOffset = with(density) { -(systemBarsTopPadding + AppBarHeight).roundToPx() }
 
-    Spacer(modifier = Modifier.height(16.dp))
-
-    Text(
-      text = title,
-      style = MaterialTheme.typography.headlineSmall,
-      fontWeight = FontWeight.Bold,
-      color = MaterialTheme.colorScheme.onBackground,
-      maxLines = 2,
-      overflow = TextOverflow.Ellipsis,
-      textAlign = androidx.compose.ui.text.style.TextAlign.Center,
-    )
-
-    Spacer(modifier = Modifier.height(6.dp))
-
-    Text(
-      text = "$trackCount tracks • Live Spotify Stream",
-      style = MaterialTheme.typography.bodyMedium,
-      color = MaterialTheme.colorScheme.onSurfaceVariant,
-    )
-
-    Spacer(modifier = Modifier.height(16.dp))
-
-    Row(
-      horizontalArrangement = Arrangement.spacedBy(12.dp),
-      verticalAlignment = Alignment.CenterVertically,
-    ) {
-      Button(
-        onClick = onPlayAll,
-        shape = RoundedCornerShape(24.dp),
-        colors = ButtonDefaults.buttonColors(
-          containerColor = MaterialTheme.colorScheme.onSurface,
-          contentColor = MaterialTheme.colorScheme.surface,
-        ),
-        contentPadding = PaddingValues(horizontal = 24.dp, vertical = 10.dp),
-      ) {
-        Icon(
-          painter = painterResource(R.drawable.play),
-          contentDescription = null,
-          modifier = Modifier.size(20.dp),
-        )
-        Spacer(modifier = Modifier.width(8.dp))
-        Text("Play", fontWeight = FontWeight.Bold)
-      }
-
-      Button(
-        onClick = onShuffle,
-        shape = RoundedCornerShape(24.dp),
-        colors = ButtonDefaults.buttonColors(
-          containerColor = MaterialTheme.colorScheme.surfaceContainerHigh,
-          contentColor = MaterialTheme.colorScheme.onSurface,
-        ),
-        contentPadding = PaddingValues(horizontal = 20.dp, vertical = 10.dp),
-      ) {
-        Icon(
-          painter = painterResource(R.drawable.shuffle),
-          contentDescription = null,
-          modifier = Modifier.size(20.dp),
-        )
-        Spacer(modifier = Modifier.width(8.dp))
-        Text("Shuffle", fontWeight = FontWeight.SemiBold)
-      }
-    }
-
-    Spacer(modifier = Modifier.height(12.dp))
-  }
-}
-
-@Composable
-private fun SpotifyTrackRow(
-  index: Int,
-  track: SpotifyTrack,
-  isActive: Boolean,
-  isPlaying: Boolean,
-  isResolving: Boolean,
-  onClick: () -> Unit,
-  modifier: Modifier = Modifier,
-) {
-  val coverUrl = SpotifyMapper.getTrackThumbnail(track)
-
-  Row(
-    modifier = modifier
-      .fillMaxWidth()
-      .clickable(onClick = onClick)
-      .background(
-        if (isActive) MaterialTheme.colorScheme.surfaceContainer.copy(alpha = 0.6f)
-        else Color.Transparent
-      )
-      .padding(horizontal = 16.dp, vertical = 8.dp),
-    verticalAlignment = Alignment.CenterVertically,
-  ) {
-    // Track index or indicator
-    Box(
-      modifier = Modifier.width(32.dp),
-      contentAlignment = Alignment.Center,
-    ) {
-      if (isResolving) {
-        CircularProgressIndicator(
-          modifier = Modifier.size(16.dp),
-          strokeWidth = 2.dp,
-          color = MaterialTheme.colorScheme.primary,
-        )
-      } else if (isActive) {
-        Icon(
-          painter = painterResource(
-            if (isPlaying) R.drawable.volume_up else R.drawable.pause
-          ),
-          contentDescription = null,
-          tint = MaterialTheme.colorScheme.primary,
-          modifier = Modifier.size(18.dp),
-        )
-      } else {
-        Text(
-          text = index.toString(),
-          style = MaterialTheme.typography.bodySmall,
-          color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f),
-        )
-      }
-    }
-
-    Spacer(modifier = Modifier.width(8.dp))
-
-    AsyncImage(
-      model = coverUrl,
-      contentDescription = null,
-      contentScale = ContentScale.Crop,
+  Box(modifier = modifier.fillMaxWidth()) {
+    // Ambient Blur Backdrop
+    OnlineBlur(
+      thumbnailUrl = coverUrl,
       modifier = Modifier
-        .size(46.dp)
-        .clip(RoundedCornerShape(8.dp))
-        .background(MaterialTheme.colorScheme.surfaceContainerHighest),
+        .matchParentSize()
+        .offset { IntOffset(0, headerOffset) }
     )
 
-    Spacer(modifier = Modifier.width(14.dp))
+    Column(
+      modifier = Modifier
+        .fillMaxWidth()
+        .padding(bottom = 24.dp),
+      horizontalAlignment = Alignment.CenterHorizontally,
+    ) {
+      Spacer(Modifier.height(16.dp))
 
-    Column(modifier = Modifier.weight(1f)) {
-      Text(
-        text = track.name,
-        style = MaterialTheme.typography.bodyLarge,
-        fontWeight = if (isActive) FontWeight.Bold else FontWeight.Medium,
-        color = if (isActive) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onBackground,
-        maxLines = 1,
-        overflow = TextOverflow.Ellipsis,
-      )
+      // Hero Artwork
+      Box(
+        modifier = Modifier
+          .fillMaxWidth()
+          .padding(horizontal = 48.dp),
+        contentAlignment = Alignment.Center,
+      ) {
+        AsyncImage(
+          model = ImageRequest.Builder(LocalContext.current).data(coverUrl).build(),
+          contentDescription = title,
+          modifier = Modifier
+            .then(
+              if (LocalConfiguration.current.screenWidthDp > 600) Modifier.size(300.dp)
+              else Modifier.fillMaxWidth().aspectRatio(1f)
+            )
+            .clip(RoundedCornerShape(8.dp)),
+          contentScale = ContentScale.Crop,
+        )
+      }
 
-      val artistText = track.artists.joinToString(", ") { it.name }
+      Spacer(Modifier.height(28.dp))
+
+      // Playlist Title
+      Row(
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.Center,
+        modifier = Modifier.padding(horizontal = 32.dp),
+      ) {
+        Text(
+          text = title,
+          style = MaterialTheme.typography.headlineMedium,
+          fontWeight = FontWeight.Bold,
+          textAlign = TextAlign.Center,
+          color = MaterialTheme.colorScheme.onSurface,
+        )
+      }
+
+      Spacer(Modifier.height(8.dp))
+
+      // Subtitle / Source
       Text(
-        text = artistText,
+        text = "Spotify Playlist",
         style = MaterialTheme.typography.bodyMedium,
-        color = MaterialTheme.colorScheme.onSurfaceVariant,
-        maxLines = 1,
-        overflow = TextOverflow.Ellipsis,
+        fontWeight = FontWeight.Bold,
+        color = MaterialTheme.colorScheme.primary,
+        textAlign = TextAlign.Center,
+        modifier = Modifier.padding(horizontal = 32.dp),
       )
+
+      Spacer(Modifier.height(16.dp))
+
+      // Metadata Badge
+      val totalDurationMs = remember(tracks) { tracks.sumOf { it.durationMs.toLong() } }
+      Surface(
+        shape = RoundedCornerShape(6.dp),
+        color = MaterialTheme.colorScheme.surfaceVariant,
+        modifier = Modifier.padding(horizontal = 32.dp),
+      ) {
+        Text(
+          text = buildString {
+            append(pluralStringResource(R.plurals.n_song, totalCount, totalCount))
+            if (totalDurationMs > 0) {
+              append(" • ")
+              val totalSec = totalDurationMs / 1000
+              val hours = totalSec / 3600
+              val minutes = (totalSec % 3600) / 60
+              if (hours > 0) {
+                append("${hours}h ${minutes}m")
+              } else {
+                append("${minutes}m")
+              }
+            }
+          },
+          style = MaterialTheme.typography.bodyMedium,
+          color = MaterialTheme.colorScheme.onSurfaceVariant,
+          modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp),
+        )
+      }
+
+      Spacer(Modifier.height(24.dp))
+
+      // Action Buttons (Play / Shuffle / Share)
+      Row(
+        modifier = Modifier
+          .fillMaxWidth()
+          .padding(horizontal = 32.dp),
+        horizontalArrangement = Arrangement.spacedBy(12.dp, Alignment.CenterHorizontally),
+        verticalAlignment = Alignment.CenterVertically,
+      ) {
+        // Play Button (Uses primary color and toggles play/pause icon)
+        Button(
+          onClick = onPlayAll,
+          shape = ButtonDefaults.shape,
+          colors = ButtonDefaults.buttonColors(
+            containerColor = MaterialTheme.colorScheme.primary,
+            contentColor = MaterialTheme.colorScheme.onPrimary,
+          ),
+          contentPadding = PaddingValues(vertical = 12.dp),
+          modifier = Modifier.weight(1f),
+        ) {
+          Row(
+            horizontalArrangement = Arrangement.Center,
+            verticalAlignment = Alignment.CenterVertically,
+          ) {
+            Icon(
+              painter = painterResource(
+                if (isPlaylistPlaying) R.drawable.pause else R.drawable.play
+              ),
+              contentDescription = null,
+              modifier = Modifier.size(20.dp),
+              tint = MaterialTheme.colorScheme.onPrimary,
+            )
+            Spacer(Modifier.width(8.dp))
+            Text(
+              text = if (isPlaylistPlaying) stringResource(R.string.pause) else stringResource(R.string.play),
+              style = MaterialTheme.typography.labelLarge,
+              fontWeight = FontWeight.Bold,
+            )
+          }
+        }
+
+        // Shuffle Button
+        Button(
+          onClick = onShuffle,
+          shape = ButtonDefaults.shape,
+          colors = ButtonDefaults.buttonColors(
+            containerColor = MaterialTheme.colorScheme.surfaceVariant,
+            contentColor = MaterialTheme.colorScheme.onSurfaceVariant,
+          ),
+          contentPadding = PaddingValues(vertical = 12.dp),
+          modifier = Modifier.weight(1f),
+        ) {
+          Row(
+            horizontalArrangement = Arrangement.Center,
+            verticalAlignment = Alignment.CenterVertically,
+          ) {
+            Icon(
+              painter = painterResource(R.drawable.shuffle),
+              contentDescription = null,
+              modifier = Modifier.size(20.dp),
+              tint = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            Spacer(Modifier.width(8.dp))
+            Text(
+              text = stringResource(R.string.shuffle),
+              style = MaterialTheme.typography.labelLarge,
+              fontWeight = FontWeight.Bold,
+            )
+          }
+        }
+
+        // Share Button
+        Surface(
+          onClick = onShare,
+          shape = CircleShape,
+          color = MaterialTheme.colorScheme.surfaceVariant,
+          modifier = Modifier.size(48.dp),
+        ) {
+          Box(contentAlignment = Alignment.Center, modifier = Modifier.fillMaxSize()) {
+            Icon(
+              painter = painterResource(R.drawable.share),
+              contentDescription = stringResource(R.string.share),
+              modifier = Modifier.size(20.dp),
+              tint = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+          }
+        }
+      }
     }
-
-    Spacer(modifier = Modifier.width(12.dp))
-
-    Text(
-      text = makeTimeString(track.durationMs.toLong()),
-      style = MaterialTheme.typography.bodySmall,
-      color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.8f),
-    )
   }
 }
