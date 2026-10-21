@@ -99,7 +99,7 @@ Echo Music delivers a seamless, premium listening experience by leveraging YouTu
 <br>
 
 - **Echo Find** — Identify songs playing around you using advanced audio recognition.
-- **Echo Brain** — An intelligent, on-device engine that analyzes your listening momentum and auto-injects perfectly aligned tracks into your queue. Read more in the [Echo Brain Documentation](ECHO_BRAIN_DOCS.md).
+- **Echo Brain** — An intelligent, on-device engine that analyzes your listening momentum and auto-injects perfectly aligned tracks into your queue.
 - **Smart Recommendations** — Personalized suggestions based on your listening history.
 - **Comprehensive Browsing** — Explore Charts, Podcasts, Moods, and Genres.
 
@@ -165,7 +165,7 @@ Download the latest pre-compiled APK from the [Releases Page](https://github.com
 1. **Clone the Repository**
 
    ```bash
-   git clone https://github.com/iad1tya/Echo-Music.git
+   git clone https://github.com/EchoMusicApp/Echo-Music.git
    cd Echo-Music
    ```
 
@@ -182,16 +182,10 @@ Download the latest pre-compiled APK from the [Releases Page](https://github.com
    Firebase is required for analytics and crash reporting. See the instructions in [SETUP.md](SETUP.md#3-configure-firebase-optional) for adding your `google-services.json`.
 
 4. **Build the Application**
-   Echo Music has two build variants: **FOSS** (without Google Play Services / Cast) and **GMS** (with Cast support).
-
-   - To build the **FOSS** Universal Debug variant:
-     ```bash
-     ./gradlew assembleUniversalFossDebug
-     ```
-   - To build the **GMS** Universal Debug variant:
-     ```bash
-     ./gradlew assembleUniversalGmsDebug
-     ```
+   To build the Universal Debug variant:
+   ```bash
+   ./gradlew assembleUniversalGmsDebug
+   ```
 
    _(For optimized ARM64 builds, release builds, or other options, refer to [SETUP.md](SETUP.md))_
 
