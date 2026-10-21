@@ -1,6 +1,9 @@
 package echo.music.iad1tya.ui.screens.playlist
 
 import android.content.Intent
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -15,10 +18,12 @@ import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.ime
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.systemBars
+import androidx.compose.foundation.layout.union
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.itemsIndexed
@@ -32,7 +37,6 @@ import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Surface
@@ -119,255 +123,265 @@ fun SpotifyPlaylistDetailScreen(
     }
   }
 
-  Scaffold(
-    topBar = {
-      TopAppBar(
-        title = {
-          if (!transparentAppBar) {
-            Text(
-              text = effectiveTitle,
-              maxLines = 1,
-              overflow = TextOverflow.Ellipsis,
-            )
-          }
-        },
-        navigationIcon = {
-          IconButton(onClick = { navController.navigateUp() }) {
-            Icon(
-              painter = painterResource(R.drawable.arrow_back),
-              contentDescription = "Back",
-            )
-          }
-        },
-        actions = {
-          IconButton(onClick = { viewModel.refresh() }) {
-            Icon(
-              painter = painterResource(R.drawable.cached),
-              contentDescription = "Refresh",
-            )
-          }
-        },
-        colors = if (transparentAppBar) {
-          TopAppBarDefaults.topAppBarColors(containerColor = Color.Transparent)
-        } else {
-          TopAppBarDefaults.topAppBarColors()
-        },
-        scrollBehavior = scrollBehavior,
-      )
-    },
-    snackbarHost = { SnackbarHost(snackbarHostState) },
-    contentWindowInsets = LocalPlayerAwareWindowInsets.current,
-  ) { innerPadding ->
-    Box(
-      modifier = Modifier
-        .fillMaxSize()
-        .padding(innerPadding)
-    ) {
-      if (uiState.isLoading && uiState.tracks.isEmpty()) {
-        Box(
-          modifier = Modifier.fillMaxSize(),
-          contentAlignment = Alignment.Center,
-        ) {
-          CircularProgressIndicator(
-            modifier = Modifier.size(36.dp),
-            color = MaterialTheme.colorScheme.onSurface,
+  Box(modifier = Modifier.fillMaxSize()) {
+    if (uiState.isLoading && uiState.tracks.isEmpty()) {
+      Box(
+        modifier = Modifier.fillMaxSize(),
+        contentAlignment = Alignment.Center,
+      ) {
+        CircularProgressIndicator(
+          modifier = Modifier.size(36.dp),
+          color = MaterialTheme.colorScheme.onSurface,
+        )
+      }
+    } else {
+      LazyColumn(
+        state = lazyListState,
+        modifier = Modifier.fillMaxSize(),
+        contentPadding = LocalPlayerAwareWindowInsets.current.union(WindowInsets.ime).asPaddingValues(),
+      ) {
+        // Playlist Header Hero Section
+        item(key = "header") {
+          SpotifyPlaylistHeader(
+            title = effectiveTitle,
+            coverUrl = effectiveCover,
+            tracks = uiState.tracks,
+            totalCount = if (uiState.totalCount > 0) uiState.totalCount else uiState.tracks.size,
+            isPlaylistPlaying = isPlaylistPlaying,
+            onPlayAll = {
+              uiState.tracks.firstOrNull()?.let { firstTrack ->
+                viewModel.playTrack(
+                  track = firstTrack,
+                  onSuccess = { songItem ->
+                    playerConnection?.playQueue(
+                      YouTubeQueue(
+                        endpoint = WatchEndpoint(videoId = songItem.id),
+                        preloadItem = songItem.toMediaMetadata(),
+                      )
+                    )
+                  },
+                  onError = {
+                    coroutineScope.launch {
+                      snackbarHostState.showSnackbar("Unable to match stream on YouTube/Addon")
+                    }
+                  }
+                )
+              }
+            },
+            onShuffle = {
+              val shuffled = uiState.tracks.shuffled()
+              shuffled.firstOrNull()?.let { firstTrack ->
+                viewModel.playTrack(
+                  track = firstTrack,
+                  onSuccess = { songItem ->
+                    playerConnection?.playQueue(
+                      YouTubeQueue(
+                        endpoint = WatchEndpoint(videoId = songItem.id),
+                        preloadItem = songItem.toMediaMetadata(),
+                      )
+                    )
+                  },
+                  onError = {
+                    coroutineScope.launch {
+                      snackbarHostState.showSnackbar("Unable to match stream on YouTube/Addon")
+                    }
+                  }
+                )
+              }
+            },
+            onShare = {
+              val shareUrl = if (playlistId == "liked") {
+                "https://open.spotify.com/collection/tracks"
+              } else {
+                "https://open.spotify.com/playlist/$playlistId"
+              }
+              val intent = Intent().apply {
+                action = Intent.ACTION_SEND
+                type = "text/plain"
+                putExtra(Intent.EXTRA_TEXT, "$effectiveTitle: $shareUrl")
+              }
+              context.startActivity(Intent.createChooser(intent, null))
+            }
           )
         }
-      } else {
-        LazyColumn(
-          state = lazyListState,
-          modifier = Modifier.fillMaxSize(),
-          contentPadding = PaddingValues(bottom = 80.dp),
-        ) {
-          // Playlist Header Hero Section
-          item(key = "header") {
-            SpotifyPlaylistHeader(
-              title = effectiveTitle,
-              coverUrl = effectiveCover,
-              tracks = uiState.tracks,
-              totalCount = if (uiState.totalCount > 0) uiState.totalCount else uiState.tracks.size,
-              isPlaylistPlaying = isPlaylistPlaying,
-              onPlayAll = {
-                uiState.tracks.firstOrNull()?.let { firstTrack ->
-                  viewModel.playTrack(
-                    track = firstTrack,
-                    onSuccess = { songItem ->
-                      playerConnection?.playQueue(
-                        YouTubeQueue(
-                          endpoint = WatchEndpoint(videoId = songItem.id),
-                          preloadItem = songItem.toMediaMetadata(),
-                        )
-                      )
-                    },
-                    onError = {
-                      coroutineScope.launch {
-                        snackbarHostState.showSnackbar("Unable to match stream on YouTube/Addon")
-                      }
-                    }
-                  )
-                }
-              },
-              onShuffle = {
-                val shuffled = uiState.tracks.shuffled()
-                shuffled.firstOrNull()?.let { firstTrack ->
-                  viewModel.playTrack(
-                    track = firstTrack,
-                    onSuccess = { songItem ->
-                      playerConnection?.playQueue(
-                        YouTubeQueue(
-                          endpoint = WatchEndpoint(videoId = songItem.id),
-                          preloadItem = songItem.toMediaMetadata(),
-                        )
-                      )
-                    },
-                    onError = {
-                      coroutineScope.launch {
-                        snackbarHostState.showSnackbar("Unable to match stream on YouTube/Addon")
-                      }
-                    }
-                  )
-                }
-              },
-              onShare = {
-                val shareUrl = if (playlistId == "liked") {
-                  "https://open.spotify.com/collection/tracks"
-                } else {
-                  "https://open.spotify.com/playlist/$playlistId"
-                }
-                val intent = Intent().apply {
-                  action = Intent.ACTION_SEND
-                  type = "text/plain"
-                  putExtra(Intent.EXTRA_TEXT, "$effectiveTitle: $shareUrl")
-                }
-                context.startActivity(Intent.createChooser(intent, null))
+
+        // Track List Items (styled as grouped Nothing OS cards)
+        itemsIndexed(
+          items = uiState.tracks,
+          key = { index, track -> "${track.id}_$index" }
+        ) { index, track ->
+          val isCurrentSong = mediaMetadata?.title.equals(track.name, ignoreCase = true)
+          val isResolving = uiState.resolvingTrackId == track.id
+          val coverUrl = SpotifyMapper.getTrackThumbnail(track)
+          val durationText = if (track.durationMs > 0) makeTimeString(track.durationMs.toLong()) else null
+
+          ListItem(
+            title = track.name,
+            subtitle = {
+              val artistsText = track.artists.joinToString(", ") { it.name }
+              val sub = joinByBullet(artistsText, durationText)
+              if (sub.isNotBlank()) {
+                Text(
+                  text = sub,
+                  style = MaterialTheme.typography.bodySmall,
+                  color = MaterialTheme.colorScheme.onSurfaceVariant,
+                  maxLines = 1,
+                  overflow = TextOverflow.Ellipsis,
+                )
               }
-            )
-          }
+            },
+            thumbnailContent = {
+              Box(
+                modifier = Modifier.size(ListThumbnailSize),
+                contentAlignment = Alignment.Center,
+              ) {
+                AsyncImage(
+                  model = coverUrl,
+                  contentDescription = null,
+                  contentScale = ContentScale.Crop,
+                  modifier = Modifier
+                    .fillMaxSize()
+                    .clip(RoundedCornerShape(ThumbnailCornerRadius))
+                    .background(MaterialTheme.colorScheme.surfaceContainerHighest),
+                )
 
-          // Track List Items (styled as grouped Nothing OS cards)
-          itemsIndexed(
-            items = uiState.tracks,
-            key = { index, track -> "${track.id}_$index" }
-          ) { index, track ->
-            val isCurrentSong = mediaMetadata?.title.equals(track.name, ignoreCase = true)
-            val isResolving = uiState.resolvingTrackId == track.id
-            val coverUrl = SpotifyMapper.getTrackThumbnail(track)
-            val durationText = if (track.durationMs > 0) makeTimeString(track.durationMs.toLong()) else null
-
-            ListItem(
-              title = track.name,
-              subtitle = {
-                val artistsText = track.artists.joinToString(", ") { it.name }
-                val sub = joinByBullet(artistsText, durationText)
-                if (sub.isNotBlank()) {
-                  Text(
-                    text = sub,
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                  )
-                }
-              },
-              thumbnailContent = {
-                Box(
-                  modifier = Modifier.size(ListThumbnailSize),
-                  contentAlignment = Alignment.Center,
-                ) {
-                  AsyncImage(
-                    model = coverUrl,
-                    contentDescription = null,
-                    contentScale = ContentScale.Crop,
+                if (isResolving) {
+                  Box(
                     modifier = Modifier
                       .fillMaxSize()
                       .clip(RoundedCornerShape(ThumbnailCornerRadius))
-                      .background(MaterialTheme.colorScheme.surfaceContainerHighest),
-                  )
-
-                  if (isResolving) {
-                    Box(
-                      modifier = Modifier
-                        .fillMaxSize()
-                        .clip(RoundedCornerShape(ThumbnailCornerRadius))
-                        .background(Color.Black.copy(alpha = 0.5f)),
-                      contentAlignment = Alignment.Center,
-                    ) {
-                      CircularProgressIndicator(
-                        modifier = Modifier.size(20.dp),
-                        strokeWidth = 2.dp,
-                        color = Color.White,
-                      )
-                    }
-                  } else if (isCurrentSong) {
-                    Box(
-                      modifier = Modifier
-                        .fillMaxSize()
-                        .clip(RoundedCornerShape(ThumbnailCornerRadius))
-                        .background(Color.Black.copy(alpha = 0.5f)),
-                      contentAlignment = Alignment.Center,
-                    ) {
-                      Icon(
-                        painter = painterResource(
-                          if (isPlaying) R.drawable.volume_up else R.drawable.pause
-                        ),
-                        contentDescription = null,
-                        tint = Color.White,
-                        modifier = Modifier.size(20.dp),
-                      )
-                    }
-                  }
-                }
-              },
-              trailingContent = {
-                IconButton(
-                  onClick = {
-                    val trackUrl = "https://open.spotify.com/track/${track.id}"
-                    val intent = Intent().apply {
-                      action = Intent.ACTION_SEND
-                      type = "text/plain"
-                      putExtra(Intent.EXTRA_TEXT, "${track.name}: $trackUrl")
-                    }
-                    context.startActivity(Intent.createChooser(intent, null))
-                  }
-                ) {
-                  Icon(
-                    painter = painterResource(R.drawable.more_vert),
-                    contentDescription = "More",
-                    tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f),
-                  )
-                }
-              },
-              shape = listItemShape(index, uiState.tracks.size),
-              isActive = isCurrentSong,
-              modifier = Modifier
-                .fillMaxWidth()
-                .clickable {
-                  if (isCurrentSong) {
-                    playerConnection?.togglePlayPause()
-                  } else {
-                    viewModel.playTrack(
-                      track = track,
-                      onSuccess = { songItem ->
-                        playerConnection?.playQueue(
-                          YouTubeQueue(
-                            endpoint = WatchEndpoint(videoId = songItem.id),
-                            preloadItem = songItem.toMediaMetadata(),
-                          )
-                        )
-                      },
-                      onError = {
-                        coroutineScope.launch {
-                          snackbarHostState.showSnackbar("Could not match \"${track.name}\" to a playable stream")
-                        }
-                      }
+                      .background(Color.Black.copy(alpha = 0.5f)),
+                    contentAlignment = Alignment.Center,
+                  ) {
+                    CircularProgressIndicator(
+                      modifier = Modifier.size(20.dp),
+                      strokeWidth = 2.dp,
+                      color = Color.White,
                     )
                   }
-                },
-            )
-          }
+                } else if (isCurrentSong) {
+                  Box(
+                    modifier = Modifier
+                      .fillMaxSize()
+                      .clip(RoundedCornerShape(ThumbnailCornerRadius))
+                      .background(Color.Black.copy(alpha = 0.5f)),
+                    contentAlignment = Alignment.Center,
+                  ) {
+                    Icon(
+                      painter = painterResource(
+                        if (isPlaying) R.drawable.volume_up else R.drawable.pause
+                      ),
+                      contentDescription = null,
+                      tint = Color.White,
+                      modifier = Modifier.size(20.dp),
+                    )
+                  }
+                }
+              }
+            },
+            trailingContent = {
+              IconButton(
+                onClick = {
+                  val trackUrl = "https://open.spotify.com/track/${track.id}"
+                  val intent = Intent().apply {
+                    action = Intent.ACTION_SEND
+                    type = "text/plain"
+                    putExtra(Intent.EXTRA_TEXT, "${track.name}: $trackUrl")
+                  }
+                  context.startActivity(Intent.createChooser(intent, null))
+                }
+              ) {
+                Icon(
+                  painter = painterResource(R.drawable.more_vert),
+                  contentDescription = "More",
+                  tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f),
+                )
+              }
+            },
+            shape = listItemShape(index, uiState.tracks.size),
+            isActive = isCurrentSong,
+            modifier = Modifier
+              .fillMaxWidth()
+              .clickable {
+                if (isCurrentSong) {
+                  playerConnection?.togglePlayPause()
+                } else {
+                  viewModel.playTrack(
+                    track = track,
+                    onSuccess = { songItem ->
+                      playerConnection?.playQueue(
+                        YouTubeQueue(
+                          endpoint = WatchEndpoint(videoId = songItem.id),
+                          preloadItem = songItem.toMediaMetadata(),
+                        )
+                      )
+                    },
+                    onError = {
+                      coroutineScope.launch {
+                        snackbarHostState.showSnackbar("Could not match \"${track.name}\" to a playable stream")
+                      }
+                    }
+                  )
+                }
+              },
+          )
         }
       }
     }
+
+    // Transparent TopAppBar overlaid directly inside Box over the LazyColumn
+    TopAppBar(
+      title = {
+        AnimatedVisibility(
+          visible = !transparentAppBar,
+          enter = fadeIn(),
+          exit = fadeOut(),
+        ) {
+          Text(
+            text = effectiveTitle,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+          )
+        }
+      },
+      navigationIcon = {
+        IconButton(
+          onClick = { navController.navigateUp() },
+          modifier = Modifier.background(
+            MaterialTheme.colorScheme.surface.copy(alpha = 0.6f),
+            CircleShape
+          )
+        ) {
+          Icon(
+            painter = painterResource(R.drawable.arrow_back),
+            contentDescription = "Back",
+          )
+        }
+      },
+      actions = {
+        IconButton(
+          onClick = { viewModel.refresh() },
+          modifier = Modifier.background(
+            MaterialTheme.colorScheme.surface.copy(alpha = 0.6f),
+            CircleShape
+          )
+        ) {
+          Icon(
+            painter = painterResource(R.drawable.cached),
+            contentDescription = "Refresh",
+          )
+        }
+      },
+      colors = TopAppBarDefaults.topAppBarColors(
+        containerColor = if (transparentAppBar) Color.Transparent else MaterialTheme.colorScheme.surface
+      ),
+      scrollBehavior = scrollBehavior,
+    )
+
+    SnackbarHost(
+      hostState = snackbarHostState,
+      modifier = Modifier.align(Alignment.BottomCenter)
+    )
   }
 }
 
@@ -388,7 +402,7 @@ private fun SpotifyPlaylistHeader(
   val headerOffset = with(density) { -(systemBarsTopPadding + AppBarHeight).roundToPx() }
 
   Box(modifier = modifier.fillMaxWidth()) {
-    // Ambient Blur Backdrop
+    // Ambient Blur Backdrop extending under status bar and TopAppBar
     OnlineBlur(
       thumbnailUrl = coverUrl,
       modifier = Modifier

@@ -878,6 +878,7 @@ class MainActivity : ComponentActivity() {
               currentRoute!!.startsWith("album/") ||
               currentRoute!!.startsWith("online_playlist/") ||
               currentRoute!!.startsWith("local_playlist/") ||
+              currentRoute!!.startsWith("spotify_playlist/") ||
               currentRoute!!.startsWith("artist/")
           }
 
@@ -1495,6 +1496,8 @@ class MainActivity : ComponentActivity() {
                             alpha =
                               if (
                                 progress > 0f ||
+                                  useFloatingNavBar ||
+                                  !shouldShowNavigationBar ||
                                   (useNewMiniPlayerDesign && !shouldShowNavigationBar)
                               )
                                 0f
@@ -1534,7 +1537,12 @@ class MainActivity : ComponentActivity() {
                       .graphicsLayer {
                         val progress = playerBottomSheetState.progress
                         alpha =
-                          if (progress > 0f || (useNewMiniPlayerDesign && !shouldShowNavigationBar))
+                          if (
+                            progress > 0f ||
+                              useFloatingNavBar ||
+                              !shouldShowNavigationBar ||
+                              (useNewMiniPlayerDesign && !shouldShowNavigationBar)
+                          )
                             0f
                           else 1f
                       }
