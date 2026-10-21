@@ -391,6 +391,23 @@ class MusicService : MediaLibraryService(), Player.Listener, PlaybackStatsListen
   private lateinit var audioQuality: echo.music.iad1tya.constants.AudioQuality
   private lateinit var ipVersion: IpVersion
 
+  fun getEffectiveAudioQuality(): echo.music.iad1tya.constants.AudioQuality {
+    val dataSaver =
+      runCatching { dataStore.get(echo.music.iad1tya.constants.DataSaverEnabledKey, false) }
+        .getOrDefault(false)
+    if (dataSaver) return echo.music.iad1tya.constants.AudioQuality.LOW
+
+    val isMetered = runCatching { connectivityManager.isActiveNetworkMetered }.getOrDefault(false)
+    val wifiQuality =
+      dataStore.get(echo.music.iad1tya.constants.AudioQualityWifiKey)
+        .toEnum(echo.music.iad1tya.constants.AudioQuality.LOSSLESS)
+    val cellularQuality =
+      dataStore.get(echo.music.iad1tya.constants.AudioQualityCellularKey)
+        .toEnum(echo.music.iad1tya.constants.AudioQuality.MEDIUM)
+
+    return if (isMetered) cellularQuality else wifiQuality
+  }
+
   private val activeQueueState = MutableStateFlow<Queue>(EmptyQueue)
   val activeQueue: StateFlow<Queue> = activeQueueState.asStateFlow()
   private var pauseAtEndOwner: Queue? = null
@@ -750,8 +767,7 @@ class MusicService : MediaLibraryService(), Player.Listener, PlaybackStatsListen
     audioManager.registerAudioDeviceCallback(audioDeviceCallback, null)
     usbDacManager.register()
 
-    audioQuality =
-      dataStore.get(AudioQualityKey).toEnum(echo.music.iad1tya.constants.AudioQuality.OPUS)
+    audioQuality = getEffectiveAudioQuality()
     ipVersion = dataStore.get(IpVersionKey).toEnum(IpVersion.AUTO)
     playerVolume = MutableStateFlow(restorePlayerVolume(dataStore.get(PlayerVolumeKey, 1f)))
 
@@ -830,22 +846,7 @@ class MusicService : MediaLibraryService(), Player.Listener, PlaybackStatsListen
     var isFirstQualityEmit = true
     scope.launch {
       dataStore.data
-        .map {
-          val qualityStr =
-            (try {
-              it[AudioQualityKey]
-            } catch (e: Exception) {
-              null
-            })
-          val quality =
-            qualityStr?.let { value ->
-              echo.music.iad1tya.constants.AudioQuality.entries.find { enumVal ->
-                enumVal.name == value
-              }
-            } ?: echo.music.iad1tya.constants.AudioQuality.OPUS
-          val dataSaver = it[echo.music.iad1tya.constants.DataSaverEnabledKey] ?: false
-          if (dataSaver) echo.music.iad1tya.constants.AudioQuality.OPUS else quality
-        }
+        .map { getEffectiveAudioQuality() }
         .distinctUntilChanged()
         .collect { newQuality ->
           val oldQuality = audioQuality
@@ -3618,7 +3619,7 @@ class MusicService : MediaLibraryService(), Player.Listener, PlaybackStatsListen
           ?.let {
             runCatching { AudioQuality.valueOf(it) }.getOrNull()
           }
-      val lockedQuality = activeQualityInCache ?: audioQuality
+      val lockedQuality = activeQualityInCache ?: getEffectiveAudioQuality()
 
       if (!shouldBypassCache) {
         if (isFullyDownloaded) {
@@ -3694,7 +3695,13 @@ class MusicService : MediaLibraryService(), Player.Listener, PlaybackStatsListen
                 ?: queueMeta?.duration?.takeIf { it > 0 }?.times(1000L)
                 ?: trackedDurationMs.takeIf { trackedMediaItem?.mediaId == mediaId && it > 0 }
 
-            val extStream = extensionManager.resolveStream(knownTitle, knownArtist, knownDuration, mediaId)
+            val canUseLossless =
+              lockedQuality.permitsLossless() &&
+                !dataStore.get(echo.music.iad1tya.constants.DataSaverEnabledKey, false)
+            val extStream =
+              if (canUseLossless) {
+                extensionManager.resolveStream(knownTitle, knownArtist, knownDuration, mediaId)
+              } else null
             Timber.tag("MusicService").e("ADDON STREAM RESULT: url=${extStream?.url} format=${extStream?.format} quality=${extStream?.quality} audioQuality=${extStream?.audioQuality}")
             if (extStream != null) {
                val flac = extStream.format.contains("flac", ignoreCase = true)
@@ -5182,6 +5189,7 @@ class MusicService : MediaLibraryService(), Player.Listener, PlaybackStatsListen
           ) {
             Timber.tag(TAG).d("Preloading stream for $mediaId")
             kotlin.runCatching {
+              val effectivePreloadQuality = getEffectiveAudioQuality()
               // Addon items must not go through YouTube prefetch: the old code
               // cached a YouTube (or failed) result under the addon mediaId and
               // raced with the on-demand addon resolve. Preload the addon URL only.
@@ -5203,7 +5211,13 @@ class MusicService : MediaLibraryService(), Player.Listener, PlaybackStatsListen
                   ?: queueMediaMetadata?.artist?.toString()?.takeIf { it.isNotBlank() }
                 val addonDuration = dbSongForAddon?.song?.duration?.let { if (it > 0) it * 1000L else null }
                   ?: queueMeta?.duration?.takeIf { it > 0 }?.times(1000L)
-                val extStream = extensionManager.resolveStream(addonTitle, addonArtist, addonDuration, mediaId)
+                val canUseLossless =
+                  effectivePreloadQuality.permitsLossless() &&
+                    !dataStore.get(echo.music.iad1tya.constants.DataSaverEnabledKey, false)
+                val extStream =
+                  if (canUseLossless) {
+                    extensionManager.resolveStream(addonTitle, addonArtist, addonDuration, mediaId)
+                  } else null
                 if (extStream != null) {
                   val flac = extStream.format.contains("flac", ignoreCase = true)
                   val playback = PlaybackData(
@@ -5251,13 +5265,13 @@ class MusicService : MediaLibraryService(), Player.Listener, PlaybackStatsListen
               val playbackData =
                 echo.music.iad1tya.utils.YTPlayerUtils.playerResponseForPlayback(
                   videoId = mediaId,
-                  audioQuality = audioQuality,
+                  audioQuality = effectivePreloadQuality,
                   connectivityManager = connectivityManager
                 )
 
               playbackData.getOrNull()?.let { playback ->
                 val stream = ResolvedStream.from(playback)
-                songUrlCache["${mediaId}_${audioQuality.name}"] = stream
+                songUrlCache["${mediaId}_${effectivePreloadQuality.name}"] = stream
                 Timber.tag(TAG).d("Preloaded stream for $mediaId")
 
                 kotlin
