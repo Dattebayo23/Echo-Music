@@ -83,6 +83,7 @@ import echo.music.iad1tya.spotify.SpotifyMapper
 import echo.music.iad1tya.spotify.models.SpotifyTrack
 import echo.music.iad1tya.ui.component.ListItem
 import echo.music.iad1tya.ui.component.OnlineBlur
+import echo.music.iad1tya.ui.component.PlayingIndicator
 import echo.music.iad1tya.utils.joinByBullet
 import echo.music.iad1tya.utils.listItemShape
 import echo.music.iad1tya.utils.makeTimeString
@@ -113,9 +114,10 @@ fun SpotifyPlaylistDetailScreen(
   val effectiveTitle = uiState.title.ifBlank { playlistTitle }
   val effectiveCover = uiState.coverUrl ?: playlistCover
 
-  val isPlaylistPlaying = isPlaying && uiState.tracks.any {
+  val isPlaylistCurrent = uiState.tracks.any {
     it.name.equals(mediaMetadata?.title, ignoreCase = true)
   }
+  val isPlaylistPlaying = isPlaying && isPlaylistCurrent
 
   val transparentAppBar by remember {
     derivedStateOf {
@@ -148,24 +150,28 @@ fun SpotifyPlaylistDetailScreen(
             tracks = uiState.tracks,
             totalCount = if (uiState.totalCount > 0) uiState.totalCount else uiState.tracks.size,
             isPlaylistPlaying = isPlaylistPlaying,
-            onPlayAll = {
-              uiState.tracks.firstOrNull()?.let { firstTrack ->
-                viewModel.playTrack(
-                  track = firstTrack,
-                  onSuccess = { songItem ->
-                    playerConnection?.playQueue(
-                      YouTubeQueue(
-                        endpoint = WatchEndpoint(videoId = songItem.id),
-                        preloadItem = songItem.toMediaMetadata(),
+            onPlayClick = {
+              if (isPlaylistCurrent) {
+                playerConnection?.togglePlayPause()
+              } else {
+                uiState.tracks.firstOrNull()?.let { firstTrack ->
+                  viewModel.playTrack(
+                    track = firstTrack,
+                    onSuccess = { songItem ->
+                      playerConnection?.playQueue(
+                        YouTubeQueue(
+                          endpoint = WatchEndpoint(videoId = songItem.id),
+                          preloadItem = songItem.toMediaMetadata(),
+                        )
                       )
-                    )
-                  },
-                  onError = {
-                    coroutineScope.launch {
-                      snackbarHostState.showSnackbar("Unable to match stream on YouTube/Addon")
+                    },
+                    onError = {
+                      coroutineScope.launch {
+                        snackbarHostState.showSnackbar("Unable to match stream on YouTube/Addon")
+                      }
                     }
-                  }
-                )
+                  )
+                }
               }
             },
             onShuffle = {
@@ -267,14 +273,19 @@ fun SpotifyPlaylistDetailScreen(
                       .background(Color.Black.copy(alpha = 0.5f)),
                     contentAlignment = Alignment.Center,
                   ) {
-                    Icon(
-                      painter = painterResource(
-                        if (isPlaying) R.drawable.volume_up else R.drawable.pause
-                      ),
-                      contentDescription = null,
-                      tint = Color.White,
-                      modifier = Modifier.size(20.dp),
-                    )
+                    if (isPlaying) {
+                      PlayingIndicator(
+                        color = Color.White,
+                        modifier = Modifier.height(20.dp),
+                      )
+                    } else {
+                      Icon(
+                        painter = painterResource(R.drawable.play),
+                        contentDescription = null,
+                        tint = Color.White,
+                        modifier = Modifier.size(20.dp),
+                      )
+                    }
                   }
                 }
               }
@@ -392,7 +403,7 @@ private fun SpotifyPlaylistHeader(
   tracks: List<SpotifyTrack>,
   totalCount: Int,
   isPlaylistPlaying: Boolean,
-  onPlayAll: () -> Unit,
+  onPlayClick: () -> Unit,
   onShuffle: () -> Unit,
   onShare: () -> Unit,
   modifier: Modifier = Modifier,
@@ -509,7 +520,7 @@ private fun SpotifyPlaylistHeader(
       ) {
         // Play Button (Uses primary color and toggles play/pause icon)
         Button(
-          onClick = onPlayAll,
+          onClick = onPlayClick,
           shape = ButtonDefaults.shape,
           colors = ButtonDefaults.buttonColors(
             containerColor = MaterialTheme.colorScheme.primary,
