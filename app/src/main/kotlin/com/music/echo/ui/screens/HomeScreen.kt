@@ -1204,14 +1204,7 @@ fun HomeScreen(
                       if (carouselState.currentItem >= currentSongs.size) {
                         carouselState.scrollToItem(0)
                       }
-                      while (true) {
-                        delay(5000)
-                        val size = currentSongs.size
-                        if (size > 1 && !carouselState.isScrollInProgress) {
-                          val nextIndex = (carouselState.currentItem + 1) % size
-                          carouselState.animateScrollToItem(nextIndex)
-                        }
-                      }
+
                     }
 
                     HorizontalCenteredHeroCarousel(
