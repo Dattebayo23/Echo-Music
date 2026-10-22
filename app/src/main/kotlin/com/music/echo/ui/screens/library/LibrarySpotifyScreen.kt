@@ -36,6 +36,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.res.painterResource
@@ -55,7 +56,6 @@ import echo.music.iad1tya.R
 import echo.music.iad1tya.constants.ListThumbnailSize
 import echo.music.iad1tya.constants.ThumbnailCornerRadius
 import echo.music.iad1tya.spotify.SpotifyMapper
-import echo.music.iad1tya.ui.component.AutoPlaylistButton
 import echo.music.iad1tya.ui.component.ListItem
 import echo.music.iad1tya.utils.joinByBullet
 import echo.music.iad1tya.utils.listItemShape
@@ -128,26 +128,9 @@ fun LibrarySpotifyScreen(
           )
         }
 
-        // Hero Card: Liked Songs (using native AutoPlaylistButton pattern)
-        item(key = "liked_songs") {
-          val countSuffix = if (uiState.likedSongsCount != null) " (${uiState.likedSongsCount})" else ""
-          AutoPlaylistButton(
-            title = stringResource(R.string.spotify_liked_songs) + countSuffix,
-            icon = R.drawable.favorite,
-            iconTint = Color(0xFF1DB954),
-            onClick = {
-              val titleEnc = Uri.encode("Liked Songs")
-              val coverEnc = Uri.encode(SPOTIFY_LIKED_SONGS_COVER)
-              navController.navigate("spotify_playlist/liked?title=$titleEnc&cover=$coverEnc")
-            },
-            modifier = Modifier
-              .fillMaxWidth()
-              .padding(horizontal = 16.dp, vertical = 6.dp)
-          )
-        }
-
         // Header: Your Playlists
         item(key = "playlists_header") {
+          val totalPlaylists = uiState.playlists.size + 1
           Row(
             modifier = Modifier
               .fillMaxWidth()
@@ -162,29 +145,85 @@ fun LibrarySpotifyScreen(
               color = MaterialTheme.colorScheme.onSurface,
             )
             Text(
-              text = pluralStringResource(R.plurals.n_playlist, uiState.playlists.size, uiState.playlists.size),
+              text = pluralStringResource(R.plurals.n_playlist, totalPlaylists, totalPlaylists),
               style = MaterialTheme.typography.titleSmall,
               color = MaterialTheme.colorScheme.secondary,
             )
           }
         }
 
-        if (uiState.playlists.isEmpty()) {
-          item(key = "empty_playlists") {
-            Box(
-              modifier = Modifier
-                .fillMaxWidth()
-                .padding(32.dp),
-              contentAlignment = Alignment.Center,
-            ) {
-              Text(
-                text = stringResource(R.string.spotify_no_playlists_found),
-                style = MaterialTheme.typography.bodyMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
+        // Liked Songs Pinned Item (uses native ListItem and matches Spotify aesthetic)
+        item(key = "liked_songs") {
+          val totalPlaylists = uiState.playlists.size + 1
+          val songCount = uiState.likedSongsCount ?: 0
+
+          ListItem(
+            title = stringResource(R.string.spotify_liked_songs),
+            subtitle = {
+              val sub = joinByBullet(
+                "Spotify",
+                pluralStringResource(R.plurals.n_song, songCount, songCount),
               )
-            }
-          }
-        } else {
+              Text(
+                text = sub,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+              )
+            },
+            thumbnailContent = {
+              Box(
+                modifier = Modifier
+                  .size(ListThumbnailSize)
+                  .clip(RoundedCornerShape(ThumbnailCornerRadius))
+                  .background(
+                    Brush.linearGradient(
+                      listOf(
+                        Color(0xFF450AF5),
+                        Color(0xFF8E8EE5),
+                        Color(0xFFABEDD8),
+                      )
+                    )
+                  ),
+                contentAlignment = Alignment.Center,
+              ) {
+                Icon(
+                  painter = painterResource(R.drawable.favorite),
+                  contentDescription = null,
+                  tint = Color.White,
+                  modifier = Modifier.size(24.dp),
+                )
+                AsyncImage(
+                  model = SPOTIFY_LIKED_SONGS_COVER,
+                  contentDescription = null,
+                  contentScale = ContentScale.Crop,
+                  modifier = Modifier.fillMaxSize(),
+                )
+              }
+            },
+            trailingContent = {
+              Icon(
+                painter = painterResource(R.drawable.ic_push_pin),
+                contentDescription = "Pinned",
+                tint = Color(0xFF1DB954),
+                modifier = Modifier
+                  .size(18.dp)
+                  .padding(end = 4.dp),
+              )
+            },
+            shape = listItemShape(0, totalPlaylists),
+            modifier = Modifier
+              .fillMaxWidth()
+              .clickable {
+                val titleEnc = Uri.encode("Liked Songs")
+                val coverEnc = Uri.encode(SPOTIFY_LIKED_SONGS_COVER)
+                navController.navigate("spotify_playlist/liked?title=$titleEnc&cover=$coverEnc")
+              },
+          )
+        }
+
+        if (uiState.playlists.isNotEmpty()) {
           itemsIndexed(
             items = uiState.playlists,
             key = { _, pl -> pl.id }
@@ -192,6 +231,7 @@ fun LibrarySpotifyScreen(
             val coverUrl = SpotifyMapper.getPlaylistThumbnail(playlist)
             val owner = playlist.owner?.displayName?.takeIf { it.isNotBlank() }
             val countText = playlist.tracks?.total?.let { "$it songs" }
+            val totalPlaylists = uiState.playlists.size + 1
 
             ListItem(
               title = playlist.name,
@@ -226,7 +266,7 @@ fun LibrarySpotifyScreen(
                   modifier = Modifier.padding(end = 4.dp),
                 )
               },
-              shape = listItemShape(index, uiState.playlists.size),
+              shape = listItemShape(index + 1, totalPlaylists),
               modifier = Modifier
                 .fillMaxWidth()
                 .clickable {
